@@ -30,7 +30,7 @@ $$  \Delta_{\lambda} = \lambda_{230} -  \lambda_{234}$$
 $$  \bigg[\bigg(\frac{^{230}Th}{^{238}U}\bigg)_A - \bigg(\frac{^{232}Th}{^{238}U}\bigg)_A \bigg(\frac{^{230}Th}{^{232}Th}\bigg)_{A0} e^{-\lambda_{230}t}\bigg]= 1 - e^{-\lambda_{230}t} + \bigg[ \bigg( \frac{^{234}U}{^{238}U}\bigg)_{A} - 1\bigg]\frac{\lambda_{230}}{\Delta_{\lambda}}(1 - e^{-\Delta_{\lambda}t})$$
 
 
-* $$\lambda_{230} 230Th decay constant
+* $\lambda_{230}$ - 230Th decay constant
 * $\lambda_{234}$ - 234U decay constant
 * $\bigg(\frac{^{230}Th}{^{238}U}\bigg)_A$ - measured activity ratio of 230Th to 238U
 *  $\bigg(\frac{^{232}Th}{^{238}U}\bigg)_A$ - measured activity ratio of 232Th to 238U
@@ -67,6 +67,10 @@ The "gold standard" approach to estimation joint age—initial thorium compositi
 * Enough spread in U-Th ratio.
 
 There is a secondary aspect to this in that a common practice is to measured one (e.g., Carolin et al. 2016) or multipe (e.g., Moseley et al., 2015) and then apply this correction to all samples or bracketing samples throughout the speleothem. This makes it a "fixed" correction as a single initial thorium correction distribution is applied to a series of samples so it is not truly allowed to vary throughout. 
+
+### IBIS
+-----
+IBIS uses a Bayesian framework to make an unique sample-specific initial thorium correction. This approach allows initial thorium to vary spatially/temporally througout a speleothem
 
 ##### References
 Carolin, S.A., Cobb, K.M., Lynch-Stieglitz, J., Moerman, J.W., Partin, J.W., Lejau, S., Malang, J., Clark, B., Tuen, A.A. and Adkins, J.F., 2016. Northern Borneo stalagmite records reveal West Pacific hydroclimate across MIS 5 and 6. Earth and Planetary Science Letters, 439, pp.182-193.
