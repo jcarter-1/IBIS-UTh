@@ -88,7 +88,7 @@ The "gold standard" approach to estimation joint age—initial thorium compositi
 
 There is a secondary aspect to this in that a common practice is to measured one (e.g., Carolin et al. 2016) or multipe (e.g., Moseley et al., 2015) and then apply this correction to all samples or bracketing samples throughout the speleothem. This makes it a "fixed" correction as a single initial thorium correction distribution is applied to a series of samples so it is not truly allowed to vary throughout. 
 
-### IBIS
+## IBIS
 -----
 IBIS uses a Bayesian framework to make an unique sample-specific initial thorium correction. This approach allows initial thorium to vary spatially/temporally througout a speleothem
 
