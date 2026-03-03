@@ -10,7 +10,7 @@ pip install should import all neccessary dependencies however python verion >= 3
 import ibis <br>
 from ibis.IBIS_Main import IBIS
 
-# IBIS
+## IBIS
 -----
 
 IBIS is a probabilisitc Bayesian model to infer unique sample-specific initial thorium compositions estaimtes thoughtout a speleothem and "correct" apparent U—Th ages accordingly. 
