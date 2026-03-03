@@ -1,6 +1,26 @@
 ## Install 
 pip install ibis-uth
 
+## Install 2
+(1) Create and activate an environment
+python 3.11 -m venv .venv
+source .venv/bin/activate
+
+(2) Install IBIS + jupyter kernel support
+pip install --upgrade pop
+pip install ibis-uth
+pip instal jupyterlab ipykernel
+
+(3) Register the Kernel 
+python -m ipykernel install --user --name ibis --display-name "Python (IBIS)"
+
+(4) Start a Jupyter notebook
+jupyter notebook
+
+(5) Select the Kernel
+Kernel -> Change Kernel -> Python (IBIS)
+
+
 ## Dependencies
 Dependencies are written in both requirements.txt and pyproject.poml. <br>
 pip install should import all neccessary dependencies however python verion >= 3.10 is needed
