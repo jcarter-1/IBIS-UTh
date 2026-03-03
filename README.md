@@ -30,7 +30,7 @@ $$  \Delta_{\lambda} = \lambda_{230} -  \lambda_{234}$$
 $$  \bigg[\bigg(\frac{^{230}Th}{^{238}U}\bigg)_A - \bigg(\frac{^{232}Th}{^{238}U}\bigg)_A \bigg(\frac{^{230}Th}{^{232}Th}\bigg)_{A0} e^{-\lambda_{230}t}\bigg]= 1 - e^{-\lambda_{230}t} + \bigg[ \bigg( \frac{^{234}U}{^{238}U}\bigg)_{A} - 1\bigg]\frac{\lambda_{230}}{\Delta_{\lambda}}(1 - e^{-\Delta_{\lambda}t})$$
 
 
-* $\lambda_{230}$ - $^{230}$Th decay constant
+* $$\lambda_{230} $$ - $^{230}$Th decay constant
 * $\lambda_{234}$ - $^{234}$U decay constant
 * $\bigg(\frac{^{230}Th}{^{238}U}\bigg)_A$ - measured activity ratio of $^{230}$Th to $^{238}$U
 *  $\bigg(\frac{^{232}Th}{^{238}U}\bigg)_A$ - measured activity ratio of $^{232}$Th to $^{238}$U
