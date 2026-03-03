@@ -46,7 +46,7 @@ Common practice in U—Th dating is to use an assumed initial thorium distributi
 
 #### Bulk Earth
 --
-An attractive approach is to use the average U-Th content of the upper crust (Taylor and Mclennan, 1995). This gives a thorium activity ratio of $^{230}$Th/$^{232}$Th = 0.83 $\pm$ 0.43 (1$\sigma$). The value would then be used to correct all samples using the above age equation framework. 
+An attractive approach is to use the average U-Th content of the upper crust (Taylor and Mclennan, 1995). This gives a thorium activity ratio of 230Th/232Th = 0.83 ± 0.43 (1sigma). The value would then be used to correct all samples using the above age equation framework. 
 
 * Assumption that there is not temporal or spatial variability in $^{230}$Th/$^{232}$Th
 * The upper crust is a reasonable description for all karst environments.
@@ -63,10 +63,22 @@ Another approach is to use stratigraphic constraints to determine a boutique ini
 ----
 The "gold standard" approach to estimation joint age—initial thorium composition is to use an isochron. I term this "gold standard" because it is the only approach that provides a truly independent estiamte with no assumptions. That is not to say that it is always perfect and in some cases far form it. Carolin et al. (2016) provide a suite of isochrons that range in scatter showing the good, bad, and ugly of using isochrons. 
 
-* Enough sample (Ludwig and titterington, $\sim$N = 6)
+* Enough sample (Ludwig and titterington, ~ 6)
 * Enough spread in U-Th ratio.
 
 There is a secondary aspect to this in that a common practice is to measured one (e.g., Carolin et al. 2016) or multipe (e.g., Moseley et al., 2015) and then apply this correction to all samples or bracketing samples throughout the speleothem. This makes it a "fixed" correction as a single initial thorium correction distribution is applied to a series of samples so it is not truly allowed to vary throughout. 
 
 ##### References
+Carolin, S.A., Cobb, K.M., Lynch-Stieglitz, J., Moerman, J.W., Partin, J.W., Lejau, S., Malang, J., Clark, B., Tuen, A.A. and Adkins, J.F., 2016. Northern Borneo stalagmite records reveal West Pacific hydroclimate across MIS 5 and 6. Earth and Planetary Science Letters, 439, pp.182-193.
+
+Hellstrom, J., 2006. U–Th dating of speleothems with high initial 230Th using stratigraphical constraint. Quaternary geochronology, 1(4), pp.289-295.
+
 Kinsley, C.W., Carter, J.N. and Sharp, W.D., 2025. IBIS: an Integrated Bayesian approach for unique Initial thorium corrections and age-depth models in U-Th dating of Speleothems. Quaternary Science Reviews, 369, p.109626.
+
+Moseley, G.E., Richards, D.A., Smart, P.L., Standish, C.D., Hoffmann, D.L., ten Hove, H. and Vinn, O., 2015. Early–middle Holocene relative sea-level oscillation events recorded in a submerged speleothem from the Yucatán Peninsula, Mexico. The Holocene, 25(9), pp.1511-1521.
+
+Roy-Barman, M. and Pons-Branchu, E., 2016. Improved U–Th dating of carbonates with high initial 230Th using stratigraphical and coevality constraints. Quaternary Geochronology, 32, pp.29-39.
+
+Taylor, S.R. and McLennan, S.M., 1995. The geochemical evolution of the continental crust. Reviews of geophysics, 33(2), pp.241-265.
+
+
