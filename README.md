@@ -1,7 +1,7 @@
 ## Install 
 pip install ibis-uth
 
-## Install 2
+## Install 2 - if install 1 is being tricky. 
 (1) Create and activate an environment
 python 3.11 -m venv .venv
 source .venv/bin/activate
@@ -55,7 +55,7 @@ $$  \bigg[\bigg(\frac{^{230}Th}{^{238}U}\bigg)_A - \bigg(\frac{^{232}Th}{^{238}U
 * $\bigg(\frac{^{230}Th}{^{238}U}\bigg)_A$ - measured activity ratio of 230Th to 238U
 *  $\bigg(\frac{^{232}Th}{^{238}U}\bigg)_A$ - measured activity ratio of 232Th to 238U
 *  $\bigg(\frac{^{234}U}{^{238}U}\bigg)_A$ - measured activity ratio of 234U to 238U
-*  $\bigg(\frac{^{230}Th}{^{232}Th}\bigg)_{A0}$ - estiamte initial activity ratio at the time of formation/deposition/crystallization
+*  $\bigg(\frac{^{230}Th}{^{232}Th}\bigg)_{A0}$ - estimate initial activity ratio at the time of formation/deposition/crystallization
 
 
 A U-Th age requires the initial thorium $\bigg(\frac{^{230}Th}{^{232}Th}\bigg)_{A0}$ correction. In the age equation you need to guess a value for this component at the time of deposition and then it is brought forward in time to the present day. This present day initial is then used to correct the present day measured activity ratios. 
@@ -83,8 +83,8 @@ Another approach is to use stratigraphic constraints to determine a boutique ini
 ----
 The "gold standard" approach to estimation joint age—initial thorium composition is to use an isochron. I term this "gold standard" because it is the only approach that provides a truly independent estiamte with no assumptions. That is not to say that it is always perfect and in some cases far form it. Carolin et al. (2016) provide a suite of isochrons that range in scatter showing the good, bad, and ugly of using isochrons. 
 
-* Enough sample (Ludwig and titterington, ~ 6)
-* Enough spread in U-Th ratio.
+* Enough sample (~ 6; this is a guess but 3 is definitely a minimum as two points always make a line and 6 feels robust but probably a better statistical way of doing this)
+* Enough spread in U-Th space.
 
 There is a secondary aspect to this in that a common practice is to measured one (e.g., Carolin et al. 2016) or multipe (e.g., Moseley et al., 2015) and then apply this correction to all samples or bracketing samples throughout the speleothem. This makes it a "fixed" correction as a single initial thorium correction distribution is applied to a series of samples so it is not truly allowed to vary throughout. 
 
