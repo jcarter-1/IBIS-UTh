@@ -1,4 +1,6 @@
 ## Install 
+IBIS is accessed through python. You can install the package via pip: 
+
 pip install ibis-uth
 
 ## Install 2 - if install 1 is being tricky. 
