@@ -33,7 +33,7 @@ class IBIS_Strat:
              ceiling_only=True,
              simple_bounds=True,
              pad_frac=0.20,
-             save_dir = self.save_dir):
+             save_dir = None):
         """
         Parameters
         ----------
