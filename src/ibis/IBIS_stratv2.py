@@ -13,6 +13,7 @@ import random
 import warnings
 warnings.filterwarnings("ignore")
 import sys
+from pathlib import Path
 
 
 class IBIS_Strat:
@@ -51,7 +52,6 @@ class IBIS_Strat:
         self.iterations = int(iterations)
         self.burn_in = int(burn_in)
         self.thin = int(thin) if thin and thin > 0 else 1
-        self.store_thin = int(store_thin) if store_thin and store_thin > 0 else 10
 
         self.Top_Age_Stal = bool(Top_Age_Stal)
         self.resolution = int(resolution)
