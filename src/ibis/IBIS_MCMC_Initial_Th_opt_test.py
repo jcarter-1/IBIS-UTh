@@ -49,18 +49,15 @@ class IBIS_MCMC:
 
         self.method = method
         self.data = data
-
-        self.Thor_KDE = Thor_KDE
         self.burn_in = int(burn_in)
         self.Age_Maximum = float(Age_Maximum)
-
+        self.Thor_KDE = Thor_KDE
         # depths + order (shallow->deep)
         self.depths = np.asarray(self.data['Depths'].values, float)
         self._depth_order = np.argsort(self.depths)
         self.depths = self.depths[self._depth_order]
 
         self.Age_Solve_Max = 5.0 * float(self.Age_Maximum)
-
         self.Age_Uncertainties = np.asarray(Age_Uncertainties, float)[self._depth_order]
 
         self.Th230_lam = 9.17055e-06   # Cheng et al. (2013)
@@ -96,15 +93,18 @@ class IBIS_MCMC:
         self.r08 = np.asarray(data['Th230_238U_ratios'].values[self._depth_order], float)
         self.r28 = np.asarray(data['Th232_238U_ratios'].values[self._depth_order], float)
         self.r48 = np.asarray(data['U234_U238_ratios'].values[self._depth_order], float)
-
         self.r08_err = np.asarray(data['Th230_238U_ratios_err'].values[self._depth_order], float)
         self.r28_err = np.asarray(data['Th232_238U_ratios_err'].values[self._depth_order], float)
         self.r48_err = np.asarray(data['U234_U238_ratios_err'].values[self._depth_order], float)
-
         # bounds for Th0
-        self.TH0_MIN = 0.01
+        self.TH0_MIN = 0.001
         self.TH0_MAX = self.compute_TH0_MAX(self.r08, self.r08_err, self.r28, self.r28_err)
-
+        
+        self.Th0_cdf_max = self._estimate_thor_xmax()
+        self._thor_prior_grid = np.linspace(self.TH0_MIN, self.Th0_cdf_max, 4096)
+        self._build_thor_inv_cdf()
+        
+        
         # tuning dict (per index)
         self.tuning = {}
         for i in range(self.N_meas):
@@ -143,39 +143,7 @@ class IBIS_MCMC:
         # storage
         self.store_thin = 5
         self.store_dtype = np.float32
-
-        # --- thor helpers ---
-        def _thor_pdf(x):
-            x = np.asarray(x, float)
-            if hasattr(self.Thor_KDE, "pdf"):
-                return np.asarray(self.Thor_KDE.pdf(x), float)
-            elif callable(self.Thor_KDE):
-                return np.asarray(self.Thor_KDE(x), float)   # <- IMPORTANT: pass x
-            else:
-                raise TypeError("Thor_KDE must be gaussian_kde, frozen rv, or a callable pdf(x).")
-
-        self._thor_pdf = _thor_pdf
         
-        def _thor_logpdf(x):
-            # robust log-pdf from whatever "Thor_KDE" is
-            vals = np.asarray(self._thor_pdf(x), float)
-            vals = np.clip(vals, 1e-300, None)   # avoid log(0)
-            return np.log(vals)
-
-        self._thor_logpdf = _thor_logpdf
-
-        def _thor_rvs(n):
-            if hasattr(self.Thor_KDE, "rvs"):
-                return np.asarray(self.Thor_KDE.rvs(size=n), float)
-            if getattr(self, "_thor_inv_cdf", None) is None:
-                self._build_thor_inv_cdf()
-            u = self.rng.random(n)
-            return np.asarray(self._thor_inv_cdf(u), float)
-        self._thor_rvs = _thor_rvs
-
-        if self.method == 'thoth':
-            self._build_thor_inv_cdf()
-
         # moves
         self._move_funcs = [
             ("Initial_Thorium",       self.Initial_Thorium_Move),
@@ -193,8 +161,7 @@ class IBIS_MCMC:
         self._lp_r = None
         self._lp_prior_total = None
         self._ll_strat_total = None
-
-
+        
     # ---------------- bounds helper ----------------
     def compute_TH0_MAX(self, r08, r08e, r28, r28e, k=3.0, eps=1e-12, l230=9.17055e-06):
         r08_hi = np.maximum(r08 + k * r08e, eps)
@@ -207,7 +174,86 @@ class IBIS_MCMC:
         hi = float(np.nanmax(r0_upper))
         hi = max(hi * 1.25, 10.0)
         return min(hi, 1e6)
+        
+    # =================
+    # =================
+    # All thorium stuff
+    # =================
+    # =================
+    def thor_pdf(self, x):
+        x = np.asarray(x, float)
+        return np.asarray(self.Thor_KDE(x), float)
+        
+    def thor_logpdf(self, x):
+        vals = np.asarray(self.thor_pdf(x), float)
+        vals = np.clip(vals, 1e-300, None)   # avoid log(0)
+        return np.log(vals)
+        
+    def _estimate_thor_xmax(self, x_min=0.0, q=0.9995, n_try=20000, max_rounds=8):
+        """
+        Estimate a sensible upper support bound for plotting / inverse-CDF sampling.
+        """
+        # Generic fallback: expand until tail density is negligible
+        x_hi = 5
+        for _ in range(max_rounds):
+            grid = np.linspace(x_min, x_hi, 1024)
+            pdf = self.thor_pdf(grid)
+            peak = np.nanmax(pdf)
+            tail = pdf[-1]
+            if np.isfinite(peak) and peak > 0 and tail / peak < 1e-6:
+                return float(x_hi)
+            x_hi *= 2.0
 
+        return float(x_hi)
+        
+    
+    def _build_thor_inv_cdf(self):
+        x = np.asarray(self._thor_prior_grid, float)
+        pdf = self.thor_pdf(x)
+        pdf = np.nan_to_num(pdf, nan=0.0, posinf=0.0, neginf=0.0)
+        pdf = np.clip(pdf, 0.0, None)
+        area = np.trapz(pdf, x)
+        if not np.isfinite(area) or area <= 0:
+            raise ValueError("Thorium prior pdf has zero or invalid area.")
+
+        pdf = pdf / area
+
+        dx = np.diff(x)
+        cdf = np.concatenate([
+        [0.0],
+        np.cumsum(0.5 * (pdf[:-1] + pdf[1:]) * dx)
+        ])
+        cdf[-1] = 1.0
+        # make strictly increasing
+        keep = np.r_[True, np.diff(cdf) > 0]
+        cdf_use = cdf[keep]
+        x_use = x[keep]
+
+        if cdf_use.size < 2:
+            raise ValueError("Inverse CDF construction failed: degenerate CDF.")
+
+        self._thor_inv_cdf = interp1d(
+            cdf_use,
+            x_use,
+            bounds_error=False,
+            fill_value=(x_use[0], x_use[-1]),
+            assume_sorted=True,
+        )
+        
+    def _thor_rvs(self, n):
+        """
+        Sample n values fro the thorium
+        prior using inverse-CDF sampling
+        """
+        n = int(n)
+        u = self.rng.random(n)
+        out = np.asarray(self._thor_inv_cdf(u), float)
+
+        # optional hard clipping to support
+        if hasattr(self, "TH0_MIN") and hasattr(self, "TH0_MAX"):
+            out = np.clip(out, self.TH0_MIN, self.TH0_MAX)
+
+        return out
 
     # ---------------- strat constraints ----------------
     def _hard_strat_check_adj(self, ages, dt_min=None):
@@ -236,7 +282,6 @@ class IBIS_MCMC:
 
     def _desired_th_sign(self, i, j, idx):
         return -1 if idx == j else +1
-
 
     # ---------------- age solver ----------------
     def U_series_age_equation(self, age, Th_initial, Th232_ratio, U234_ratio, Th230_ratio):
@@ -371,18 +416,6 @@ class IBIS_MCMC:
         return ages
 
 
-    # ---------------- priors ----------------
-    def _build_thor_inv_cdf(self, x_min=0, x_max=None, grid_points=2000):
-        if x_max is None:
-            x_max = self.TH0_MAX
-        x_grid = np.linspace(x_min, x_max, grid_points)
-        pdf_vals = np.clip(self._thor_pdf(x_grid), 1e-300, None)
-        dx = x_grid[1] - x_grid[0]
-        cdf_vals = np.cumsum(pdf_vals) * dx
-        cdf_vals /= cdf_vals[-1]
-        self._thor_inv_cdf = interp1d(cdf_vals, x_grid, bounds_error=False,
-                                      fill_value=(x_min, x_max))
-
     def ln_prior_ratios(self, U234, Th230, Th232):
         if np.any(U234 <= 0) or np.any(Th230 <= 0) or np.any(Th232 <= 0):
             return -np.inf
@@ -435,11 +468,11 @@ class IBIS_MCMC:
             return -np.inf
 
         lp = 0.0
-        lp += float(np.sum(uniform(self.TH0_MIN, self.TH0_MAX).logpdf(th)))
-        lp += float(np.sum(self._thor_logpdf(th)))
+        # Total prior is the combination of the
+        # measured ratios and initial ratio
+        lp += float(np.sum(self.thor_logpdf(th)))
         lp += float(self.ln_prior_ratios(U234, Th230, Th232))
         return lp if np.isfinite(lp) else -np.inf
-
 
     # ---------------- likelihood pieces ----------------
     def strat_likelihood(self, ages):
@@ -475,7 +508,6 @@ class IBIS_MCMC:
     def _age_is_saturated(self, ages, frac=1e-6):
         eps = float(frac) * float(self.Age_Maximum)
         return np.asarray(ages, float) >= (float(self.Age_Maximum) - eps)
-
 
     # ---------------- full posterior evaluators ----------------
     def log_posterior(self, theta, ages_prev=None):
@@ -536,7 +568,6 @@ class IBIS_MCMC:
 
         return float(lp + ll)
 
-
     # ===================== CACHES (speed, same math) =====================
     def _init_prior_cache(self, theta):
         th, U234, Th230, Th232 = theta
@@ -547,7 +578,7 @@ class IBIS_MCMC:
 
         for i in range(N):
             self._lp_u[i] = _uniform_logpdf_scalar(th[i], self.TH0_MIN, self.TH0_MAX)
-            self._lp_k[i] = float(self._thor_logpdf(th[i]))
+            self._lp_k[i] = float(self.thor_logpdf(th[i]))
             self._lp_r[i] = (
                 _norm_logpdf_scalar(U234[i], self.r48[i], self.r48_err[i]) +
                 _norm_logpdf_scalar(Th230[i], self.r08[i], self.r08_err[i]) +
@@ -570,7 +601,7 @@ class IBIS_MCMC:
         new_u = _uniform_logpdf_scalar(thn[idx], self.TH0_MIN, self.TH0_MAX)
         if not np.isfinite(new_u):
             return -np.inf
-        new_k = float(self._thor_logpdf(thn[idx]))
+        new_k = float(self.thor_logpdf(thn[idx]))
         new_r = (
             _norm_logpdf_scalar(U234n[idx], self.r48[idx], self.r48_err[idx]) +
             _norm_logpdf_scalar(Th230n[idx], self.r08[idx], self.r08_err[idx]) +
@@ -622,7 +653,6 @@ class IBIS_MCMC:
         self._ll_strat_total += float(d)
         return float(d)
 
-
     # ---------------- proposal helpers ----------------
     def _draw_positive_normal(self, mu, sigma, max_tries=50):
         mu = np.asarray(mu, float)
@@ -644,14 +674,12 @@ class IBIS_MCMC:
         Th230_c = self.r08
         Th232_c = self.r28
         U234_c  = self.r48
-
         Th230_s = self.r08_err
         Th232_s = self.r28_err
         U234_s  = self.r48_err
 
         # monotone age guess by depth to help Newton
         age_guess = np.linspace(0.05, 0.95, self.N_meas) * float(self.Age_Maximum)
-
         found = np.zeros(self.n_chains, dtype=bool)
 
         for chain in range(self.n_chains):
@@ -670,10 +698,8 @@ class IBIS_MCMC:
                     initial_thetas.append(theta)
                     found[chain] = True
                     break
-
             if (not found[chain]) and verbose:
                 print(f"⚠️ chain {chain} failed after {max_attempts} attempts")
-
         if not np.all(found):
             bad = np.where(~found)[0].tolist()
             raise RuntimeError(
@@ -681,9 +707,7 @@ class IBIS_MCMC:
                 f"Likely: Age_Maximum too tight / Th0 bounds too restrictive / "
                 f"data imply no root for some points."
             )
-
         return initial_thetas, found
-
 
     # ---------------- moves ----------------
     def Th232_U238_Move(self, theta, tuning, index):
@@ -807,7 +831,6 @@ class IBIS_MCMC:
         log_s += eta * (rate - target)
         self.tuning[key] = float(np.clip(np.exp(log_s), smin, smax))
 
-
     # ---------------- I/O ----------------
     def Save_Parameters_and_Tuning(self, theta, chain_id):
     
@@ -817,7 +840,6 @@ class IBIS_MCMC:
             pickle.dump(theta, f)
         with open(tf_file, 'wb') as f:
             pickle.dump(self.tuning, f)
-
 
     # ===================== MAIN MCMC (optimized + fixed rollback) =====================
     def MCMC(self, theta, iterations, chain_id):
@@ -850,11 +872,9 @@ class IBIS_MCMC:
                 f"Initial theta produced non-finite posterior/ages for chain {chain_id}. "
                 f"logp={logp_cur}, finite_ages={np.isfinite(ages_cur).all()}"
             )
-
         # init caches (for single-index fast updates)
         self._init_prior_cache(theta)
         self._init_strat_cache(ages_cur)
-
         # allocate storage
         keep = iterations // self.store_thin + int(iterations % self.store_thin != 0)
         Ages_store            = np.zeros((keep, Ndata), dtype=self.store_dtype)
@@ -1108,7 +1128,6 @@ class IBIS_MCMC:
         elapsed = time.time() - start_time
         if chain_id == 0:
             print(f"\nChain {chain_id} finished in {elapsed/60:.2f} min. Stored {sample_index} samples.\n")
-
         return (
             Ages_store,
             Initial_Th_mean_store,
@@ -1118,7 +1137,6 @@ class IBIS_MCMC:
             posterior_store,
             U234_initial_store,
         )
-
 
     # ---------------- init/run helpers ----------------
     def check_starting_parameters(self):

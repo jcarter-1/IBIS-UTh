@@ -4,13 +4,14 @@ from . import IBIS_Thoth_V2
 from . import IBIS_MCMC_Initial_Th_opt_test
 from . import IBIS_stratv2
 from . import USeries_Age_Equations
-from . import IBIS_strat_Hiatus
 import os
 import pickle
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 from scipy.stats import gaussian_kde, lognorm
+from scipy.interpolate import interp1d
+
 from datetime import datetime
 from pathlib import Path
 
@@ -52,7 +53,7 @@ class IBIS:
     * n_chains = Number of chains run (can be any integer value but 3 to 6 is good)
     * MCMC_Strat_samples = Number of stratigraphic age model samples (number is singular - burn in is half this number and is add to the total number - then these samples are discarded)
     * Start_from_pickles = True or False - Flag if you have run the sample before it will find the previous location and start from it
-    * method = 'thoth' or 'bulkspeleothem' - Choice of how to construct the prior - recommendation is 'thoth'
+    * method = 'thoth' Choice of how to construct the prior - recommendation is 'thoth'
 
     ## Running Schematic
 
@@ -75,8 +76,9 @@ class IBIS:
 
         * test.Run_MCMC_Strat() - Second part if wanted - Get age and depth model relationship using IBIS-derived ages and uncertainties
     """
+    
     def __init__(self, filepath, sample_name, MCMC_samples = 5000, MCMC_burn_in = 1000, MCMC_Strat_samples = 50000,
-                n_chains = 3, Start_from_pickles = True, Top_Age_Stal = False, Hiatus = False, show_bird = True,
+                n_chains = 3, Start_from_pickles = True, Top_Age_Stal = False,  show_bird = True,
                 method = 'thoth',
                 strat_resolution = 100,
                  diction_meta = None,
@@ -127,36 +129,11 @@ class IBIS:
         # Create a results folder
         self.rng = np.random.default_rng(1234)
 
-
         # Check for Hiatus and Top Stal Collection Age
         self.Top_Age_Stal = Top_Age_Stal
         if self.Top_Age_Stal: 
             self.collect_data = input('Please input date of sample collection in dd-mm-yyyy format: ')
             self.Top_Age_Stal  = self.Get_Top_Age()
-        self.Hiatus_Check = Hiatus
-
-        if self.Hiatus_Check:
-            while True:
-                try:
-                    self.Hiatus_start = float(input(
-                        "Please input start (highest point) of the observed Hiatus "
-                        "– match units of the input data: "
-                    ))
-                    break
-                except ValueError:
-                    print("⚠️  Invalid number. Please enter a decimal or integer value.")
-        
-            while True:
-                try:
-                    self.Hiatus_end = float(input(
-                        "Please input end (lowest point) of the observed Hiatus "
-                        "– match units of the input data: "
-                    ))
-                    break
-                except ValueError:
-                    print("⚠️  Invalid number. Please enter a decimal or integer value.")
-        
-        
         
         self.IBIS_intro = """
                  ==============    ==========     =============   ============
@@ -167,7 +144,7 @@ class IBIS:
                         =          ==========           =         ============
                         =          =         =          =                    =
                         =          =          =         =                    =
-                        =          =          =         =                    =
+                        =          =           =         =                    =
                         =          =         =          =                    =
                   =============    ==========      ============   ============
 
@@ -254,8 +231,8 @@ class IBIS:
             r48 = self.df_reduced['U234_U238_ratios'].values
             r48_err = self.df_reduced['U234_U238_ratios_err'].values
             
-            self.bounds_ibis_ext = IBIS_Bounds_and_Uncertainties.IBIS_bounds_and_Uncertainties(r08, r28, r48,
-            r08_err, r28_err, r48_err, self.bounds_file_name,
+            self.bounds_ibis_ext = IBIS_Bounds_and_Uncertainties.IBIS_bounds_and_Uncertainties(r08, r28, r48,  r08_err, r28_err,
+             r48_err, self.bounds_file_name,
             self.save_dir)
 
             
@@ -270,14 +247,23 @@ class IBIS:
         self.age_uncertainties = self.bounds_params[1]
         self.are_there_bounds = True
         
-
     def Get_IBIS_Bounds(self): 
         if not self.are_there_bounds: 
             self.Setup_Bounds_and_Uncertainties()
         
-        return self.test_ages, self.age_max, self.age_uncertainties   
+        return self.test_ages, self.age_max, self.age_uncertainties
+        
+    # ================================================
+    # Thorium Prior
+    # ================================================
+    def _reset_thorium_cache(self):
+        self._thor_inv_cdf = None
+        self._thor_max = None
 
     def Initialize_Thoth(self):
+        if not self.are_there_bounds:
+            self.Setup_Bounds_and_Uncertainties()
+        
         prior_fpath = self.save_dir / f"{self.kdes_name}.pkl"
 
         if prior_fpath.exists():
@@ -297,7 +283,7 @@ class IBIS:
 
         self.thor_kde = self.Thor_prior            # gaussian_kde
         self.Thorium_prior_exist = True            # <- consistent flag
-
+        self._reset_thorium_cache()
 
     def Set_Up_MCMC(self):
         """
@@ -311,15 +297,7 @@ class IBIS:
         if not getattr(self, "Thorium_prior_exist", False):
             if self.method == 'thoth':
                 self.Initialize_Thoth()
-            elif self.method == 'bulkspeleothem':
-                # Your parameters:
-                # lognorm(s, loc, scale) with s = sigma_log, loc = 0, scale = exp(mu_log)
-                # You currently use: lognorm(1.25748898, 0.0, 2.7024700608392247)
-                self.thor_kde = lognorm(
-                    1.2574889802170042,  # s (σ in log-space)
-                    0.0,                 # loc
-                    2.7024700608392247   # scale = exp(μ)
-                )
+                
             else:
                 raise ValueError(f"Unknown method: {self.method}")
 
@@ -327,74 +305,168 @@ class IBIS:
 
         return self.thor_kde
 
-        
     def _thor_pdf(self, x):
-        x = np.asarray(x, float)
-        if hasattr(self.thor_kde, "pdf"):         # e.g., scipy.stats.lognorm (frozen)
-            return self.thor_kde.pdf(x)
-        elif hasattr(self.thor_kde, "__call__"):  # gaussian_kde
-            return np.asarray(self.thor_kde(x), float)
+        if self.thor_kde is None:
+            self.Set_Up_MCMC()
+
+        x = np.asarray(x, dtype=float)
+        x_eval = np.clip(x, 0.0, None)
+
+        if hasattr(self.thor_kde, "pdf"):
+            pdf = np.asarray(self.thor_kde.pdf(x_eval), dtype=float)
+        elif callable(self.thor_kde):
+            pdf = np.asarray(self.thor_kde(x_eval), dtype=float)
         else:
-            raise TypeError("Thor_KDE must be a scipy frozen rv or gaussian_kde")
-    
-    def _thor_rvs(self, n):
-        # 1) scipy rv: use its sampler
-        if hasattr(self.thor_kde, "rvs"):
-            return np.asarray(self.thor_kde.rvs(size=n), float)
-        # 2) gaussian_kde: prefer native resample if available (fast & correct)
-        if hasattr(self.thor_kde, "resample"):
-            s = self.thor_kde.resample(n)  # shape (dim, n); for 1D dim=1
-            return np.asarray(s).reshape(-1)
-        # 3) fallback: inverse-CDF on a grid
-        if getattr(self, "_thor_inv_cdf", None) is None:
-            self._build_thor_inv_cdf()
-        u = self.rng.random(n)
-        return np.asarray(self._thor_inv_cdf(u), float)
-    
+            raise TypeError("Thorium prior must be a scipy frozen rv, gaussian_kde, or callable pdf(x).")
+
+        pdf[~np.isfinite(pdf)] = 0.0
+        pdf[pdf < 0] = 0.0
+        pdf[x < 0] = 0.0
+        return pdf
+
+    def _estimate_thor_xmax(self, x_min=0.0, q=0.9995, n_try=20000, max_rounds=8):
+        """
+        Estimate a sensible upper support bound for plotting / inverse-CDF sampling.
+        """
+        if self.thor_kde is None:
+            self.Set_Up_MCMC()
+            
+        x_hi = 1.0
+        for _ in range(max_rounds):
+            grid = np.linspace(x_min, x_hi, 1024)
+            pdf = self._thor_pdf(grid)
+            peak = np.nanmax(pdf)
+            tail = pdf[-1]
+            if np.isfinite(peak) and peak > 0 and tail / peak < 1e-6:
+                return float(x_hi)
+            x_hi *= 2.0
+
+        return float(x_hi)
+
     def _build_thor_inv_cdf(self, x_min=0.0, x_max=None, grid_points=4096):
-        # only needed for KDE fallback
-        if hasattr(self.thor_kde, "rvs"):  # parametric: skip
-            return
-        # adapt support until ~all mass is inside
-        xmax = 0.5 if x_max is None else float(x_max)
-        for _ in range(12):
-            x_grid = np.linspace(x_min, xmax, grid_points)
-            pdf = np.clip(self._thor_pdf(x_grid), 0.0, None)
-            dx = x_grid[1] - x_grid[0]
-            cdf = np.cumsum(pdf) * dx
-            tot = cdf[-1]
-            if tot <= 0 or not np.isfinite(tot):
-                xmax *= 2.0
-                continue
-            cdf /= tot
-            if cdf[-1] > 0.999:
-                break
-            xmax *= 2.0
-        from scipy.interpolate import interp1d
-        self._thor_inv_cdf = interp1d(cdf, x_grid, bounds_error=False,
-                                    fill_value=(x_min, xmax))
-                        
+        """
+        Build inverse CDF on a finite support for robust sampling from any pdf-like prior.
+        """
+        if self.thor_kde is None:
+            self.Set_Up_MCMC()
+
+        if x_max is None:
+            x_max = self._estimate_thor_xmax(x_min=x_min)
+
+        x_grid = np.linspace(float(x_min), float(x_max), int(grid_points))
+        pdf = self._thor_pdf(x_grid)
+
+        area = np.trapz(pdf, x_grid)
+        if not np.isfinite(area) or area <= 0:
+            raise ValueError("Could not build thorium inverse CDF: PDF integrates to zero or invalid value.")
+
+        pdf /= area
+
+        dx = np.diff(x_grid)
+        cdf = np.concatenate((
+            [0.0],
+            np.cumsum(0.5 * (pdf[:-1] + pdf[1:]) * dx)
+        ))
+        cdf /= cdf[-1]
+
+        keep = np.concatenate(([True], np.diff(cdf) > 0))
+        cdf = cdf[keep]
+        x_grid = x_grid[keep]
+
+        self._thor_inv_cdf = interp1d(
+            cdf,
+            x_grid,
+            bounds_error=False,
+            fill_value=(float(x_min), float(x_max))
+        )
+        self._thor_xmax = float(x_max)
+
+    def _thor_rvs(self, n):
+        if self.thor_kde is None:
+            self.Set_Up_MCMC()
+
+        n = int(n)
+        if n <= 0:
+            return np.array([], dtype=float)
+
+        # frozen scipy distribution
+        if hasattr(self.thor_kde, "rvs"):
+            try:
+                s = np.asarray(self.thor_kde.rvs(size=n, random_state=self.rng), dtype=float)
+            except TypeError:
+                s = np.asarray(self.thor_kde.rvs(size=n), dtype=float)
+
+            s = s[np.isfinite(s)]
+            s = s[s >= 0]
+            return s
+
+        # gaussian_kde native sampler
+        if hasattr(self.thor_kde, "resample"):
+            out = []
+            need = n
+
+            while need > 0:
+                draw = np.asarray(self.thor_kde.resample(max(need * 2, 1000)), dtype=float).reshape(-1)
+                draw = draw[np.isfinite(draw)]
+                draw = draw[draw >= 0]
+                if draw.size:
+                    take = draw[:need]
+                    out.append(take)
+                    need -= take.size
+
+            return np.concatenate(out)
+
+        # generic callable pdf -> inverse CDF sampler
+        if self._thor_inv_cdf is None:
+            self._build_thor_inv_cdf()
+
+        u = self.rng.random(n)
+        s = np.asarray(self._thor_inv_cdf(u), dtype=float)
+        s = s[np.isfinite(s)]
+        s = s[s >= 0]
+        return s
+
     def Generate_samples_from_Prior(self, n=100_000):
         return self._thor_rvs(n)
 
-    def Plot_Priors(self, smooth_sigma_px=50):
+    def Plot_Priors(self, n_plot=50000, q_low=0.001, q_high=0.999, grid_points=1000):
+        if self.thor_kde is None:
+            self.Set_Up_MCMC()
 
-    
+        # choose plotting range robustly
+        if hasattr(self.thor_kde, "ppf"):
+            try:
+                lo = max(0.0, float(self.thor_kde.ppf(q_low)))
+                hi = float(self.thor_kde.ppf(q_high))
+            except Exception:
+                s = self._thor_rvs(n_plot)
+                lo = max(0.0, float(np.quantile(s, q_low)))
+                hi = float(np.quantile(s, q_high))
+        else:
+            s = self._thor_rvs(n_plot)
+            lo = max(0.0, float(np.quantile(s, q_low)))
+            hi = float(np.quantile(s, q_high))
+
+        if not np.isfinite(hi) or hi <= lo:
+            hi = self._estimate_thor_xmax(x_min=0.0)
+
+        x = np.linspace(lo, hi, grid_points)
+        y = self._thor_pdf(x)
+
         fig, ax = plt.subplots(1, 1, figsize=(5.5, 4.8))
-        ax.plot(self.thor_kde.x,
-               self.thor_kde.y,
-               lw=1.8, label=r"Prior for $^{230}\mathrm{Th}/^{232}\mathrm{Th}_{\mathrm{init}}$",
-               color= 'dodgerblue')
-        ax.fill_between(self.thor_kde.x,
-               self.thor_kde.y, alpha=0.35, color = 'navy')
-        #ax.set_xlim(lo, hi)                 # <-- use lo, hi (no hard 0)
-        #ax.set_ylim(0.0, ymax + ypad)       # <-- give headroom
+        ax.plot(
+            x, y, lw=1.8,
+            label=r"Prior for $^{230}\mathrm{Th}/^{232}\mathrm{Th}_{\mathrm{init}}$",
+            color='dodgerblue'
+        )
+        ax.fill_between(x, y, alpha=0.35, color='navy')
         ax.set_xlabel(r"$^{230}$Th/$^{232}$Th initial")
         ax.set_ylabel("Density")
+        ax.set_xlim(lo, hi)
         ax.legend(frameon=True)
         return fig, ax
         
-            
+        
     def Look_at_initial(self):
         if not self.set_up_the_chain:
             self.thor_kde = self.Set_Up_MCMC()
@@ -413,8 +485,6 @@ class IBIS:
                                               
         return self.Ibis_Chains.Initial_Guesses_for_Model()
                 
-        
-
     def Run_MCMC(self): 
         if not self.set_up_the_chain: 
             self.thor_kde = self.Set_Up_MCMC()
@@ -439,14 +509,12 @@ class IBIS:
         self.Run_MCMC()
         self.results_dicts = self.Ibis_Chains.Get_Results_Dictionary()
 
-
     def Get_Post_Vals(self): 
         if not self.Chain_run: 
             self.Run_MCMC()
             self.results_dicts  = self.Ibis_Chains.Get_Results_Dictionary()
         self.Ibis_Chains.Get_Posterior_Values()
         
-
     def Posterior_plot(self):         
         
         if not self.Chain_run: 
@@ -454,17 +522,14 @@ class IBIS:
             self.results_dicts  = self.Ibis_Chains.Get_Results_Dictionary()
         self.Ibis_Chains.Get_Posterior_plot()
 
-
     def Model_U_ages(self): 
         if not self.Chain_run: 
             self.Run_MCMC()
             self.results_dicts  = self.Ibis_Chains.Get_Results_Dictionary()
 
-
         age_c, (age_lo68, age_hi68), (age_lo95, age_hi95), age_sigma = self.Ibis_Chains.Get_Useries_Ages()
 
         return age_c, (age_lo68, age_hi68), (age_lo95, age_hi95), age_sigma
-
 
     def Model_Initial_Thorium(self): 
         if not self.Chain_run: 
@@ -476,17 +541,14 @@ class IBIS:
 
         return Th0_c, (Th0_lo68, Th0_hi68), (Th0_lo95, Th0_hi95), Th0_sigma
 
-
     def Model_Initial_U234(self): 
         if not self.Chain_run: 
             self.Run_MCMC()
             self.results_dicts = self.Ibis_Chains.Get_Results_Dictionary()
 
-
         U0_c,  (U0_lo68,  U0_hi68),  (U0_lo95,  U0_hi95),  U0_sigma = self.Ibis_Chains.Get_234U_initial()
 
         return U0_c,  (U0_lo68,  U0_hi68),  (U0_lo95,  U0_hi95),  U0_sigma
-
 
     def Plot_U_ages_and_Age_model(self, AGE_MODEL = True): 
         self.model_ages, self.model_ages_err, self.model_depths, self.model_depths_err = self.Model_Ages_Depths()
@@ -540,7 +602,6 @@ class IBIS:
 
     def Get_Chain_Stats_Lam_Th230(self): 
         return self.Ibis_Chains.Th230_Chain_Stats()
-
 
     def Load_U_Series_Ages(self, filename): 
         df = pd.read_csv(filename)
