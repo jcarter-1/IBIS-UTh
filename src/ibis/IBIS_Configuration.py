@@ -11,7 +11,7 @@ class IBIS_Configuration_Class:
     This is a precusor to the model and neccassary for defining parameters and 
     distributions required for the IBIS Bayesian model. 
     """
-    def __init__(self, filepath): 
+    def __init__(self, filepath, data_uncertainty_level = None):
         """
         Initialize the IBIS model with 
         default configurations. 
@@ -19,7 +19,13 @@ class IBIS_Configuration_Class:
         self.filepath = filepath
         # Data
         self.Input_Data = None
-        self.load_data() 
+        self.load_data()
+        if data_uncertainty_level is None:
+            self.uncert_level = 1.0
+        if data_uncertainty_level is '1sig':
+            self.uncert_level = 1.0
+        if data_uncertainty_level is '2sig':
+            self.uncert_level = 2.0
     
     def load_data(self): 
         """
@@ -128,15 +134,16 @@ class IBIS_Configuration_Class:
         U234_U238_ratios_err = self._234U_err()
         
         # Creaing a DataFrame with the extracted data
+        # Uncertainties used throughout are at 1sigma analytical
         self.df_ratios = pd.DataFrame({
             "Th230_238U_ratios": Th230_238U_ratios,
-            "Th230_238U_ratios_err": Th230_238U_ratios_err,
+            "Th230_238U_ratios_err": Th230_238U_ratios_err / self.uncert_level,
             "Th232_238U_ratios": Th232_238U_ratios,
-            "Th232_238U_ratios_err": Th232_238U_ratios_err,
+            "Th232_238U_ratios_err": Th232_238U_ratios_err / self.uncert_level,
             "U234_U238_ratios": U234_U238_ratios,
-            "U234_U238_ratios_err": U234_U238_ratios_err,
+            "U234_U238_ratios_err": U234_U238_ratios_err / self.uncert_level,
             "Depths": Depths,
-            "Depths_err": Depths_err
+            "Depths_err": Depths_err / self.uncert_level
         })
 
         return self.df_ratios

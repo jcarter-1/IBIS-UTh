@@ -82,13 +82,16 @@ class IBIS:
                 method = 'thoth',
                 strat_resolution = 100,
                  diction_meta = None,
-                 save_dir = None):
+                 save_dir = None,
+                 data_uncertainty_level = None):
                 
         self.method = method
         self.filepath = filepath
         self.strat_resolution = strat_resolution
-        # Configure the Data
-        self.config = IBIS_Configuration.IBIS_Configuration_Class(self.filepath)
+        # Configure the Data and uncertainty level
+        self.data_uncertainty_level = data_uncertainty_level
+        self.config = IBIS_Configuration.IBIS_Configuration_Class(self.filepath,
+        data_uncertainty_level = self.data_uncertainty_level)
         # Get refined dataset
         self.df_reduced = self.config.Get_Measured_Ratios()
         # Sample
@@ -172,7 +175,7 @@ class IBIS:
                             =                               === 
                       =======                           ====
                    ====                              ===
-                =====                              ===   
+                =====                              ===
                =                ========== =  =
                 ===  ============         =     =   
                  ===========           =        =
@@ -269,7 +272,7 @@ class IBIS:
         if prior_fpath.exists():
             with open(prior_fpath, 'rb') as f:
                 self.Thor_prior = pickle.load(f)   # gaussian_kde
-            print(f"♻️  Loaded existing Thorium prior from\n{prior_fpath}")
+            print(f"Loaded existing Thorium prior from\n{prior_fpath}")
         else:
             self.thoth = IBIS_Thoth_V2.IBIS_Thoth_Robust(
                 self.df_reduced, self.age_max,
@@ -279,7 +282,7 @@ class IBIS:
             self.thoth.save_thor_prior()
             with open(prior_fpath, 'rb') as f:
                 self.Thor_prior = pickle.load(f)
-            print(f"✅  Computed & saved Thorium prior to\n {prior_fpath}")
+            print(f"Computed & saved Thorium prior to\n {prior_fpath}")
 
         self.thor_kde = self.Thor_prior            # gaussian_kde
         self.Thorium_prior_exist = True            # <- consistent flag
@@ -582,34 +585,115 @@ class IBIS:
                     self.df_reduced['Depths'].values.min() - 5)
         
         ax.legend(loc = 3)
-
         
     def SaveSummary(self):
         self.Ibis_Chains.SummaryDataFrame()
         print(f'Summary saved to {self.sample_name}_ibis_summary.csv')
         
-    def Get_Chain_Stats_Thor(self):
-        return self.Ibis_Chains.In_Thor_Chain_Stats()
-
-    def Get_In_Thor(self): 
-        return self.Ibis_Chains.Get_Initial_Thoriums()
+    def MakeCompleteDataFrame(self):
+        """
+        This is going to be the the full data frame
+        * Measured activity ratios and uncertainties
+        * Uncorrected ages and uncertainties
+        * Depths measured and uncertainties
+        * IBIS outputs
+        """
+        df_ibis = self.Ibis_Chains.MakeSummaryDataFrame()
+        df_data = self.df_reduced
+        df_combined = df_ibis.join(df_data)
+        uncorr_ages, uncorr_ages_err, _ = self.Get_IBIS_Bounds()
+        df_combined['Uncorrected age (a)'] = uncorr_ages
+        df_combined['Uncorrected age 1sigma (a)'] = uncorr_ages_err
         
-    def Get_Chain_Stats_Uages(self): 
-        return self.Ibis_Chains.Useries_Age_Chain_Stats()
+        return df_combined
+        
+    def SaveTotalDataFrame(self):
+        df_all = self.MakeCompleteDataFrame()
+        output_path = self.save_dir /f"{self.sample_name}_ibis_complete_summary.csv"
+        df_all.to_csv(output_path, index=False)
+        print(f"Complete summary saved to: {output_path}")
 
-    def Get_Chain_Stats_Lam_U234(self): 
-        return self.Ibis_Chains.lam234_Chain_Stats()
+    # These don't exist - but I will add them
+    # Existed in earlier version that needs some updating
+    
+    #def Get_Chain_Stats_Thor(self):
+    #    return self.Ibis_Chains.In_Thor_Chain_Stats()
 
-    def Get_Chain_Stats_Lam_Th230(self): 
-        return self.Ibis_Chains.Th230_Chain_Stats()
+    #def Get_In_Thor(self):
+    #    return self.Ibis_Chains.Get_Initial_Thoriums()
+        
+    #def Get_Chain_Stats_Uages(self):
+    #    return self.Ibis_Chains.Useries_Age_Chain_Stats()
+
+    #def Get_Chain_Stats_Lam_U234(self):
+    #    return self.Ibis_Chains.lam234_Chain_Stats()
+
+    #def Get_Chain_Stats_Lam_Th230(self):
+    #    return self.Ibis_Chains.Th230_Chain_Stats()
+    
+    def preprocess_boundary_ages(self,
+        median,
+        low68,
+        high68,
+        low95,
+        high95,
+        age_floor=0.0,
+        tol=1e-10,
+        use_divisor=2.0,
+    ):
+        """
+        Convert summarized posterior intervals into asymmetric age errors suitable
+        for the age-depth model.
+
+        Returns
+        -------
+        age_med : ndarray
+        age_err_low : ndarray
+        age_err_high : ndarray
+        flags : ndarray of bool
+            True where a boundary-collapsed 68% interval was replaced using 95%.
+        """
+        median = np.asarray(median, float)
+        low68 = np.asarray(low68, float)
+        high68 = np.asarray(high68, float)
+        low95 = np.asarray(low95, float)
+        high95 = np.asarray(high95, float)
+
+        age_med = median.copy()
+        age_err_low = np.maximum(age_med - low68, 0.0)
+        age_err_high = np.maximum(high68 - age_med, 0.0)
+
+        flags = np.zeros(age_med.shape, dtype=bool)
+
+        for i in range(age_med.size):
+            collapsed68 = (
+                abs(age_med[i] - age_floor) < tol and
+                abs(low68[i]   - age_floor) < tol and
+                abs(high68[i]  - age_floor) < tol
+            )
+
+            if collapsed68 and (high95[i] > age_floor + tol):
+                age_err_low[i] = 0.0
+                age_err_high[i] = max((high95[i] - age_floor) / use_divisor, tol)
+                flags[i] = True
+
+        return age_med, age_err_low, age_err_high, flags
 
     def Load_U_Series_Ages(self, filename): 
         df = pd.read_csv(filename)
         U_series_ages = df['age'].values
-        U_series_ages_err_low = df['age_err_lo68'].values
-        U_series_ages_err_high = df['age_err_hi68'].values
+        U_series_ages_err_low68 = df['age_lo68'].values
+        U_series_ages_err_high68 = df['age_hi68'].values
+        U_series_ages_err_low95 = df['age_lo95'].values
+        U_series_ages_err_high95 = df['age_hi95'].values
         # Return ages and a tuple of their error bounds (low, high)
-        return U_series_ages, (U_series_ages_err_low, U_series_ages_err_high)     
+        U_age_median, U_age_err_low, U_age_err_high, _ = self.preprocess_boundary_ages(U_series_ages,
+                                                        U_series_ages_err_low68,
+                                                        U_series_ages_err_high68,
+                                                        U_series_ages_err_low95,
+                                                        U_series_ages_err_high95)
+                                                        
+        return U_age_median, (U_age_err_low, U_age_err_high)
 
     def Run_MCMC_Strat(self): 
         u_ages_file =  self.save_dir / f'{self.sample_name}_ibis_summary.csv'
@@ -620,9 +704,13 @@ class IBIS:
             self.U_series_ages, self.U_series_ages_err = self.Load_U_Series_Ages(u_ages_file)
         else: 
             print("Bayesian Ages Dont Exist Yet! Running IBIS Part1. Hold on...")
-            self.U_series_ages, self.U_series_ages_err, _, _  = self.Model_U_ages()
+            self.Run_MCMC()
+            self.SaveSummary()
+            u_ages_file =  self.save_dir / f'{self.sample_name}_ibis_summary.csv'
+            if os.path.exists(u_ages_file):
+                print(f"File '{u_ages_file}' exists. Loading")
+            self.U_series_ages, self.U_series_ages_err = self.Load_U_Series_Ages(u_ages_file)
     
-
         U_ages = self.U_series_ages
         U_ages_low = self.U_series_ages_err[0]
         U_ages_high = self.U_series_ages_err[1]
