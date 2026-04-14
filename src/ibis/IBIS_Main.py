@@ -715,7 +715,7 @@ class IBIS:
         U_ages_low = self.U_series_ages_err[0]
         U_ages_high = self.U_series_ages_err[1]
         
-        self.Ibis_Stratigraphy = IBIS_stratv2.IBIS_Strat(U_ages,
+        self.Ibis_Stratigraphy = IBIS_stratv2.IBIS_Strat2(U_ages,
                                                U_ages_low,
                                                U_ages_high,
                                                self.df_reduced, 
@@ -724,9 +724,17 @@ class IBIS:
                                                self.n_chains, 
                                                iterations = self.MCMC_Strat_samples, 
                                                burn_in = int(self.MCMC_Strat_samples)/2, 
-                                               Top_Age_Stal = self.Top_Age_Stal,
-                                               resolution = self.strat_resolution,
-                                               save_dir = self.save_dir)
+                                                       resolution=100,
+                                                top_age=self.meta.get("top_age", None),
+                                                top_age_err=self.meta.get("top_age_err", None),
+                                                top_age_depth=self.meta.get("top_age_depth", None),
+                                                model_top_depth=self.meta.get("model_top_depth", None),
+                                                model_bottom_depth=self.meta.get("model_bottom_depth", None),
+                                                pad_frac=0.10,
+                                                sigma_extra=0.0,
+                                                smoothness=self.meta.get("smoothness", 1e-6),
+                                                save_dir=self.save_dir)
+        
         self.Ibis_Stratigraphy.Run_MCMC_Strat();
         self.Chain_strat_run = True
 
