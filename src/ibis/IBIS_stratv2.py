@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from scipy.stats import lognorm
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
 from tqdm import tqdm
@@ -18,7 +19,10 @@ class IBIS_Strat2:
     - fixed depth grid
     - latent ages at grid nodes
     - monotone increasing with depth
-    - weak smoothness prior
+    - hyper-parameter on smoothness (I call this smoothness but
+    could be something like how sharp growth rate changes are
+        - This is going to be extremely weak because really I want the data to
+        tell the story and i'd argument that growths of speleothems can be extremely sporadic.
     - hybrid observation model:
         * half-normal from floor for effectively one-sided zero-age constraints
         * asymmetric Gaussian otherwise
@@ -31,7 +35,7 @@ class IBIS_Strat2:
         U_series_ages_err_high,
         data,
         sample_name="SAMPLE_NAME",
-        Start_from_pickles=True,
+        Start_from_pickles=False,
         n_chains=3,
         iterations=30000,
         burn_in=10000,
@@ -44,9 +48,10 @@ class IBIS_Strat2:
         model_bottom_depth=None,
         pad_frac=0.10,
         sigma_extra=0.0,
-        smoothness=1e-7,
-        save_dir=None,
-    ):
+        smoothness_mu= 1e-5,
+        smoothness_sigma = 8,
+        save_dir=None
+            ):
         self.sample_name = str(sample_name)
         self.Start_from_pickles = bool(Start_from_pickles)
         self.n_chains = int(n_chains)
@@ -56,7 +61,8 @@ class IBIS_Strat2:
         self.resolution = int(resolution)
         self.pad_frac = float(pad_frac)
         self.sigma_extra = float(max(sigma_extra, 0.0))
-        self.smoothness = float(max(smoothness, 1e-12))
+        self.smoothness_mu = float(smoothness_mu)
+        self.smoothness_sigma = float(smoothness_sigma)
         self.Chain_Results = None
 
         if save_dir is not None:
@@ -84,14 +90,12 @@ class IBIS_Strat2:
                 f"No depth column found. Expected 'Depth_Meas' or 'Depths'. "
                 f"Available columns: {list(data.columns)}"
             )
-
         if "Depth_Meas_err" in data.columns:
             self.Depths_err = np.asarray(data["Depth_Meas_err"].values, float).copy()
         elif "Depths_err" in data.columns:
             self.Depths_err = np.asarray(data["Depths_err"].values, float).copy()
         else:
-            self.Depths_err = np.zeros_like(self.Depths, dtype=float)
-
+            self.Depths_err = np.ones(data.shape[0]) * 0.05 * self.Depths.min()
         # ---------------------------
         # Optional top age anchor
         # ---------------------------
@@ -152,9 +156,10 @@ class IBIS_Strat2:
         self.age_ceiling = float(self.u_ages[i_bot] + 5.0 * sig_bot)
 
         # Proposal weights
-        self.p_local = 0.35
-        self.p_block = 0.45
-        self.p_tilt = 0.20
+        self.p_local = 0.30
+        self.p_block = 0.40
+        self.p_tilt = 0.15
+        self.p_smooth = 0.15
 
     # =========================================================
     # Helpers
@@ -168,7 +173,7 @@ class IBIS_Strat2:
 
     def _initial_model(self):
         """
-        Start from observed age-depth shape rather than a straight-line fit.
+        Start from observed age-depth shape.
         """
         age0 = np.interp(self.depth_grid, self.Depths, self.u_ages)
         return self._project_monotone(age0)
@@ -182,30 +187,49 @@ class IBIS_Strat2:
             raise ValueError("No posterior samples available.")
         return [np.percentile(X, q, axis=0) for q in qs]
 
+    def smooth_logpdf(self, smooth):
+        if smooth <= 0 or not np.isfinite(smooth):
+            return -np.inf
+    
+        # --- parameters ---
+        sigma = self.smoothness_sigma   # BIG spread (try 1.5–3 depending how loose you want)
+        mu = np.log(self.smoothness_mu) + sigma**2  # ensures mode at 1e-4
+    
+        log_s = np.log(smooth)
+        z = (log_s - mu) / sigma
+    
+        return -0.5 * z * z - np.log(smooth) - np.log(sigma) - 0.5 * np.log(2*np.pi)
+
     # =========================================================
     # Prior
     # =========================================================
-    def _rw2_logprior(self, age):
+    def _rw2_logprior(self, age, smooth):
         d2 = np.diff(age, n=2)
         if d2.size == 0:
             return 0.0
-        return float(-0.5 * self.smoothness * np.dot(d2, d2))
+        return float(-0.5 * smooth * np.dot(d2, d2))
 
-    def Log_Priors(self, Age_Model):
+    def Log_Priors(self, Age_Model, smooth):
         Age_Model = np.asarray(Age_Model, float)
-
+    
         if np.any(~np.isfinite(Age_Model)):
             return -np.inf
         if np.any(np.diff(Age_Model) <= 0.0):
             return -np.inf
-        if np.min(Age_Model) < self.age_floor:
+        if np.min(Age_Model) < 0:
             return -np.inf
-        if np.max(Age_Model) > self.age_ceiling:
+        if np.max(Age_Model) > 1e6:
             return -np.inf
-
-        # Only the structural prior matters here
-        return self._rw2_logprior(Age_Model)
-
+        if not np.isfinite(smooth) or smooth <= 0:
+            return -np.inf
+        # lognormal prior on smooth
+        mu = np.log(self.smoothness_mu)
+        sigma = np.log(self.smoothness_sigma)
+        smooth_lp = lognorm(s=sigma, scale=np.exp(mu)).logpdf(smooth)
+    
+        rw2_lprior_ = self._rw2_logprior(Age_Model, smooth)
+        return float(smooth_lp + rw2_lprior_)
+    
     # =========================================================
     # Likelihood
     # =========================================================
@@ -229,7 +253,7 @@ class IBIS_Strat2:
         model,
         floor_tol=1e-10,
         asym_ratio=0.05,
-    ):
+        ):
         mu = float(mu)
         sigma_low_raw = float(max(sigma_low_raw, 0.0))
         sigma_low_eff = float(max(sigma_low_eff, 1e-12))
@@ -271,8 +295,8 @@ class IBIS_Strat2:
 
         return float(ll)
 
-    def Log_Posterior(self, Age_Model):
-        lp = self.Log_Priors(Age_Model)
+    def Log_Posterior(self, Age_Model, smooth):
+        lp = self.Log_Priors(Age_Model, smooth)
         if not np.isfinite(lp):
             return -np.inf
         ll = self.Log_Likelihood(Age_Model)
@@ -284,20 +308,38 @@ class IBIS_Strat2:
     # Initialization
     # =========================================================
     def Initial_Guesses_for_Model(self):
+        # Guess age model and guess hyperparameter for smoothing
         base = self._initial_model()
         sigma0 = max(1e-3, np.nanmean(0.5 * (self.low_age_err + self.high_age_err)))
-
+        
         starts = []
         for _ in range(self.n_chains):
             trial = base + np.random.normal(0.0, 0.25 * sigma0, size=base.size)
             trial = self._project_monotone(trial)
-            starts.append(trial)
+            sigma_init = 0.5   # narrow init, even if prior is broader
+            mu_init = np.log(self.smoothness_mu) + sigma_init**2
+        
+            smooth_param = float(np.exp(np.random.normal(mu_init, sigma_init)))
+            starts.append([trial, smooth_param])
         return starts
 
     # =========================================================
     # Proposals
     # =========================================================
-    def _propose_local(self, Age_Model, scale):
+    def _propose_smooth_rate(self, Age_Model, smooth, scale):
+        """
+        Proposal for the Hyperparameter
+        - This is a bounded positive only parameter
+        so going to do a move log move
+        """
+        S = float(smooth)
+        eta = np.log(max(S, 1e-30))
+        
+        eta_prop = eta + np.random.normal(0.0, scale)
+        smooth_prop = float(np.exp(eta_prop))
+        return Age_Model, smooth_prop
+    
+    def _propose_local(self, Age_Model, smooth, scale):
         """
         Monotone-preserving local move: propose only within valid neighbors.
         """
@@ -309,13 +351,14 @@ class IBIS_Strat2:
         upper = self.age_ceiling - eps if k == A.size - 1 else A[k + 1] - eps
 
         if upper <= lower:
-            return A
+            return A, smooth
 
         proposal = A[k] + np.random.normal(0.0, scale)
         A[k] = np.clip(proposal, lower, upper)
-        return A
+        
+        return A, smooth
 
-    def _propose_block(self, Age_Model, scale):
+    def _propose_block(self, Age_Model, smooth, scale):
         """
         Segment move followed by monotone projection.
         Kept simple for now.
@@ -325,9 +368,9 @@ class IBIS_Strat2:
         i = np.random.randint(0, n - 1)
         j = np.random.randint(i + 1, min(n, i + max(3, n // 5)) + 1)
         A[i:j] += np.random.normal(0.0, scale)
-        return self._project_monotone(A)
+        return self._project_monotone(A), smooth
 
-    def _propose_tilt(self, Age_Model, scale):
+    def _propose_tilt(self, Age_Model, smooth, scale):
         """
         Ramp move across a segment followed by monotone projection.
         """
@@ -337,17 +380,22 @@ class IBIS_Strat2:
         j = np.random.randint(i + 2, min(n, i + max(4, n // 4)) + 1)
         amp = np.random.normal(0.0, scale)
         A[i:j] += amp * np.linspace(-1.0, 1.0, j - i)
-        return self._project_monotone(A)
+        return self._project_monotone(A), smooth
 
-    def propose_state(self, Age_Model, scale):
+    def propose_state(self, Age_Model, smooth, scale):
         r = np.random.rand()
         if r < self.p_local:
-            return self._propose_local(Age_Model, scale)
+            return self._propose_local(Age_Model, smooth, scale[0]), "X"
         elif r < self.p_local + self.p_block:
-            return self._propose_block(Age_Model, scale)
+            return self._propose_block(Age_Model, smooth, scale[0]), "X"
+        elif r < self.p_local + self.p_block + self.p_tilt:
+            return self._propose_tilt(Age_Model, smooth, scale[0]), "X"
+        elif r < self.p_local + self.p_block + self.p_tilt + self.p_smooth:
+            return self._propose_smooth_rate(Age_Model, smooth, scale[1]), "Y"
         else:
-            return self._propose_tilt(Age_Model, scale)
+            raise RuntimeError("Proposal probabilities do not sum to 1.")
 
+    
     # =========================================================
     # Paths
     # =========================================================
@@ -364,8 +412,10 @@ class IBIS_Strat2:
     # MCMC
     # =========================================================
     def MCMC(self, theta, niters, chain_id):
-        Age_Model = np.asarray(theta, float).copy()
-        cur_post = self.Log_Posterior(Age_Model)
+        Age_Model = np.asarray(theta[0], float).copy()
+        Smooth_Model = float(theta[1])
+
+        cur_post = self.Log_Posterior(Age_Model, Smooth_Model)
 
         if not np.isfinite(cur_post):
             raise ValueError("Initial Age_Model has non-finite posterior.")
@@ -373,9 +423,12 @@ class IBIS_Strat2:
         tuning_file = self._tuning_path(chain_id)
         if tuning_file.exists() and self.Start_from_pickles:
             with open(tuning_file, "rb") as f:
-                tune = float(pickle.load(f))
+                tune = np.asarray(pickle.load(f), dtype=float)
         else:
-            tune = max(1e-3, np.nanmean(0.5 * (self.low_age_err + self.high_age_err)))
+            tune = np.array([
+                max(1e-3, np.nanmean(0.5 * (self.low_age_err + self.high_age_err))),
+                0.001
+            ], dtype=float)
 
         niters = int(niters)
         burn = int(self.burn_in)
@@ -388,10 +441,11 @@ class IBIS_Strat2:
 
         Age_store = np.empty((n_keep, self.resolution), float) if n_keep > 0 else np.empty((0, self.resolution))
         Growth_store = np.empty((n_keep, self.resolution - 1), float) if n_keep > 0 else np.empty((0, self.resolution - 1))
+        Smooth_store = np.empty((n_keep,), float) if n_keep > 0 else np.empty((0,))
         post_store = np.empty((n_keep,), float) if n_keep > 0 else np.empty((0,))
 
-        prop_count = 0
-        acc_count = 0
+        prop_count = {k:0 for k in range(tune.size)}
+        acc_count = {k:0 for k in range(tune.size)}
         save_idx = 0
 
         pbar = tqdm(
@@ -404,43 +458,57 @@ class IBIS_Strat2:
         )
 
         for i in pbar:
-            prop = self.propose_state(Age_Model, tune)
-            prop_post = self.Log_Posterior(prop)
+            prop, type = self.propose_state(Age_Model, Smooth_Model, tune)
+            prop_post = self.Log_Posterior(prop[0], prop[1])
 
             accept = False
             if np.isfinite(prop_post):
                 log_alpha = prop_post - cur_post
                 if (log_alpha >= 0.0) or (np.log(np.random.rand()) < log_alpha):
-                    Age_Model = prop
+                    Age_Model = prop[0]
+                    Smooth_Model = float(prop[1])
                     cur_post = prop_post
                     accept = True
+            if type == 'X':
+                prop_count[0] += 1
+                if accept:
+                    acc_count[0] += 1
+            else:
+                prop_count[1] +=1
+                if accept:
+                    acc_count[1] +=1
 
-            prop_count += 1
-            if accept:
-                acc_count += 1
-
-            if (i < burn) and (i % 200 == 0):
-                acc_rate = acc_count / max(prop_count, 1)
-                if acc_rate < 0.15:
-                    tune *= 0.8
-                elif acc_rate > 0.45:
-                    tune *= 1.2
-                tune = float(np.clip(tune, 1e-4, max(1.0, self.age_ceiling)))
-                prop_count = 0
-                acc_count = 0
+            if (i < burn) and (i % 500 == 0):
+                acc_rate = np.zeros(2, dtype=float)
+            
+                for k in range(2):
+                    acc_rate[k] = acc_count[k] / max(prop_count[k], 1)
+            
+                    if acc_rate[k] < 0.15:
+                        tune[k] *= 0.8
+                    elif acc_rate[k] > 0.45:
+                        tune[k] *= 1.2
+            
+                tune[0] = float(np.clip(tune[0], 1e-4, max(1.0, self.age_ceiling)))
+                tune[1] = float(np.clip(tune[1], 1e-12, 5.0))
+            
+                for k in range(2):
+                    prop_count[k] = 0
+                    acc_count[k] = 0
 
             if (i >= burn) and (((i - burn) % thin) == 0) and (save_idx < n_keep):
                 Age_store[save_idx, :] = Age_Model
                 Growth_store[save_idx, :] = np.diff(Age_Model) / np.maximum(np.diff(self.depth_grid), 1e-12)
                 post_store[save_idx] = cur_post
+                Smooth_store[save_idx] = Smooth_Model
                 save_idx += 1
 
         with open(self._theta_path(chain_id), "wb") as f:
-            pickle.dump(Age_Model, f)
+            pickle.dump((Age_Model,Smooth_Model), f)
         with open(self._tuning_path(chain_id), "wb") as f:
             pickle.dump(tune, f)
 
-        return Age_store, Growth_store, post_store
+        return Age_store, Growth_store, post_store, Smooth_store
 
     def check_starting_parameters(self):
         starts = []
@@ -448,7 +516,8 @@ class IBIS_Strat2:
             path = self._theta_path(chain_id)
             if self.Start_from_pickles and path.exists():
                 with open(path, "rb") as f:
-                    starts.append(pickle.load(f))
+                    age_model, smooth_model = pickle.load(f)
+                    starts.append([np.asarray(age_model, float), float(smooth_model)])
             else:
                 starts.append(None)
 
@@ -481,7 +550,8 @@ class IBIS_Strat2:
             "resolution": self.resolution,
             "pad_frac": self.pad_frac,
             "sigma_extra": self.sigma_extra,
-            "smoothness": self.smoothness,
+            "smoothness_mu": self.smoothness_mu,
+            "smoothness_sigma": self.smoothness_sigma,
             "n_chains": self.n_chains,
             "model_top_depth": self.model_top_depth,
             "model_bottom_depth": self.model_bottom_depth,
@@ -499,15 +569,18 @@ class IBIS_Strat2:
             self.Run_MCMC_Strat()
 
         arrs = []
-        for age_store, growth_store, post_store in self.Chain_Results:
+        for age_store, growth_store, post_store, Smooth_store in self.Chain_Results:
             if which == "age":
                 if age_store.shape[0] > 0:
                     arrs.append(age_store)
             elif which == "growth":
                 if growth_store.shape[0] > 0:
                     arrs.append(growth_store)
+            elif which == "Smooth":
+                if Smooth_store.shape[0] > 0:
+                    arrs.append(Smooth_store)
             else:
-                raise ValueError("which must be 'age' or 'growth'")
+                raise ValueError("which must be 'age', 'growth', 'Smooth'")
 
         if len(arrs) == 0:
             raise ValueError(f"No posterior draws found for '{which}'.")
@@ -522,6 +595,11 @@ class IBIS_Strat2:
         draws = self._stack_draws("growth")
         low, med, high = self._safe_percentiles(draws, qs=(2.5, 50, 97.5))
         return low, high, med
+
+    def Get_Smooth(self):
+        draws = self._stack_draws("Smooth")
+        low, med, high = self._safe_percentiles(draws, qs=(2.5, 50, 97.5))
+        return draws, low, high, med
 
     def Get_Ages_At_Depths(self, depth_query, return_full=False,
                            bounds_error=False, fill_value=np.nan):
@@ -592,3 +670,12 @@ class IBIS_Strat2:
         output_path = self.save_dir / f"{self.sample_name}_Age_Depth_Model.csv"
         df_age_depth.to_csv(output_path, index=False)
         print(f"Saved Age-Depth model to: {output_path}")
+
+    def Smoothness(self):
+        draws, lo, hi, med = self.Get_Smooth()
+        fig, ax = plt.subplots(1, 1, figsize = (5,5))
+        ax.hist(draws, bins = 50,
+               density = True);
+        ax.set_xlabel('Smoothness ($\gamma$)')
+        ax.set_ylabel('Density')
+        return fig, ax

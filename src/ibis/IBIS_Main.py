@@ -732,7 +732,8 @@ class IBIS:
                                                 model_bottom_depth=self.meta.get("model_bottom_depth", None),
                                                 pad_frac=0.10,
                                                 sigma_extra=0.0,
-                                                smoothness=self.meta.get("smoothness", 1e-6),
+                                                smoothness_mu=self.meta.get("smoothness_mu", 1e-5),
+                                                smoothness_sigma=self.meta.get("smoothness_sigma", 5),
                                                 save_dir=self.save_dir)
         
         self.Ibis_Stratigraphy.Run_MCMC_Strat();
