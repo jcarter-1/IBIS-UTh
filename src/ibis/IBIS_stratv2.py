@@ -192,6 +192,7 @@ class IBIS_Strat2:
         if x < 0.0 or x > 1.0:
             return -np.inf
         return np.log(1 * x)
+        
     
     # =========================================================
     # Prior
@@ -307,10 +308,8 @@ class IBIS_Strat2:
         for _ in range(self.n_chains):
             trial = base + np.random.normal(0.0, 0.25 * sigma0, size=base.size)
             trial = self._project_monotone(trial)
-            sigma_init = 0.5   # narrow init, even if prior is broader
-            mu_init = np.log(self.smoothness_mu) + sigma_init**2
         
-            smooth_param = float(np.exp(np.random.normal(mu_init, sigma_init)))
+            smooth_param = float(np.random.rand())
             starts.append([trial, smooth_param])
         return starts
 
