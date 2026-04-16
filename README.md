@@ -3,6 +3,9 @@ IBIS is accessed through python. You can install the package via pip:
 
 pip install ibis-uth
 
+## Update to latest package
+pip install ibis-uth --upgrade 
+
 ## Install 2 - if install 1 is being tricky. 
 (1) Create and activate an environment
 python 3.11 -m venv .venv
