@@ -192,7 +192,7 @@ class IBIS_Strat2:
         if x < 0.0 or x > 1.0:
             return -np.inf
         return np.log(1 * x)
-
+    
     # =========================================================
     # Prior
     # =========================================================
@@ -217,7 +217,7 @@ class IBIS_Strat2:
             return -np.inf
         # lognormal prior on smooth
         smooth_lp = self.triangle_logpdf_scalar(smooth)
-        
+    
         rw2_lprior_ = self._rw2_logprior(Age_Model, smooth)
         return float(smooth_lp + rw2_lprior_)
     
@@ -256,7 +256,7 @@ class IBIS_Strat2:
             return self._halfnorm_logpdf_from_floor(model, self.age_floor, sigma_high_eff)
 
         # Otherwise: ordinary asymmetric Gaussian
-        delta = mu - model
+        delta = model - mu
         sigma = sigma_low_eff if delta < 0.0 else sigma_high_eff
         return -0.5 * (delta / sigma) ** 2 - np.log(sigma) - 0.5 * np.log(2.0 * np.pi)
 
