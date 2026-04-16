@@ -187,18 +187,11 @@ class IBIS_Strat2:
             raise ValueError("No posterior samples available.")
         return [np.percentile(X, q, axis=0) for q in qs]
 
-    def smooth_logpdf(self, smooth):
-        if smooth <= 0 or not np.isfinite(smooth):
+    def triangle_logpdf_scalar(sefl, x):
+        x = float(x)
+        if x < 0.0 or x > 1.0:
             return -np.inf
-    
-        # --- parameters ---
-        sigma = self.smoothness_sigma   # BIG spread (try 1.5–3 depending how loose you want)
-        mu = np.log(self.smoothness_mu) + sigma**2  # ensures mode at 1e-4
-    
-        log_s = np.log(smooth)
-        z = (log_s - mu) / sigma
-    
-        return -0.5 * z * z - np.log(smooth) - np.log(sigma) - 0.5 * np.log(2*np.pi)
+        return np.log(1 * x)
 
     # =========================================================
     # Prior
@@ -223,10 +216,8 @@ class IBIS_Strat2:
         if not np.isfinite(smooth) or smooth <= 0:
             return -np.inf
         # lognormal prior on smooth
-        mu = np.log(self.smoothness_mu)
-        sigma = np.log(self.smoothness_sigma)
-        smooth_lp = lognorm(s=sigma, scale=np.exp(mu)).logpdf(smooth)
-    
+        smooth_lp = self.triangle_logpdf_scalar(smooth)
+        
         rw2_lprior_ = self._rw2_logprior(Age_Model, smooth)
         return float(smooth_lp + rw2_lprior_)
     

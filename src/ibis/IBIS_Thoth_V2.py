@@ -691,7 +691,7 @@ class IBIS_Thoth_Robust:
             kept_e02.extend(e02[chosen].tolist())
             kept_ll.extend(ll_total[chosen].tolist())
 
-            if verbose and (b % 5 == 0):
+            if verbose and (b % 100 == 0):
                 print(f"[thoth] batch {b+1}/{max_batches}: valid={good_idx.size} kept_total={len(kept_r02)} (r02_hi={r02_hi:.4g})")
 
             if len(kept_r02) >= target_keep:
