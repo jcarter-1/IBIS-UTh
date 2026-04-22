@@ -193,17 +193,34 @@ class IBIS_MCMC:
             rng= self.rng,
         )
     
-        # tuning dict (per index, used by block move)
-        self.tuning = {}
-        for i in range(self.N_meas):
-            self.tuning[f'Initial_Thorium_{i}']   = 0.1
-            self.tuning[f'Th230_U238_ratios_{i}'] = self.r08_err[i]
-            self.tuning[f'Th232_U238_ratios_{i}'] = self.r28_err[i]
-            self.tuning[f'U234_U238_ratios_{i}']  = self.r48_err[i]
+        def _safe_log_step(val, err, floor=1e-8):
+            val = max(float(val), 1e-12)
+            err = max(float(err), floor)
+            rel = err / val
+            return float(np.sqrt(np.log(1.0 + rel**2)))
         
-        self.keys = list(self.tuning.keys())
+        # --- move probabilities ---
+        self.p_block  = 0.65
+        self.p_single = 0.35
+        
+        # --- block tuning: one scale per sample index ---
+        self.tuning_block = {}
+        for i in range(self.N_meas):
+            self.tuning_block[f'Block_{i}'] = 0.10
+        
+        # --- single-parameter tuning: one scale per parameter per index ---
+        self.tuning_single = {}
+        for i in range(self.N_meas):
+            self.tuning_single[f'Initial_Thorium_{i}']   = 0.10
+            self.tuning_single[f'U234_U238_ratios_{i}']  = _safe_log_step(self.r48[i], self.r48_err[i])
+            self.tuning_single[f'Th230_U238_ratios_{i}'] = _safe_log_step(self.r08[i], self.r08_err[i])
+            self.tuning_single[f'Th232_U238_ratios_{i}'] = _safe_log_step(self.r28[i], self.r28_err[i])
+        
+        self.block_keys  = list(self.tuning_block.keys())
+        self.single_keys = list(self.tuning_single.keys())
+        self.keys = self.block_keys + self.single_keys
     
-        # Pairings 
+        # Pairings
         N = self.N_meas
         I, J = np.triu_indices(N, k=1)
         self._IJ_I = I
@@ -472,20 +489,6 @@ class IBIS_MCMC:
         ll_strat = log_ndtr(z).sum()
         return float(ll_same + ll_strat)
 
-   # def strat_likelihood(self, ages):
-   #     i = self._adj_I
-   #     j = self._adj_J
-   #
-      #     diff_depth = (self.depths[j] != self.depths[i])
-      #     if not np.any(diff_depth):
-      #         return 0.0
-
-      #     dA = ages[j] - ages[i]
-      #     sig = np.maximum(self._adj_sigma, 1e-12)
-
-     #      z = dA[diff_depth] / sig[diff_depth]
-     #     return float(log_ndtr(z).sum())
-
     def age_max_penalty(self, ages, w=1e6, power=2):
         ages = np.asarray(ages, float)
         Amax = float(self.Age_Maximum)
@@ -601,44 +604,116 @@ class IBIS_MCMC:
     # ---------------- moves ----------------
     def PerSampleBlock_Move(self, theta, index):
         th_cur, U234_cur, Th230_cur, Th232_cur = theta
-
-        s_th   = float(self.tuning.get(f'Initial_Thorium_{index}', 0.03))
-        s_u234 = float(self.tuning.get(f'U234_U238_ratios_{index}', 0.02))
-        s_t30  = float(self.tuning.get(f'Th230_U238_ratios_{index}', 0.02))
-        s_t32  = float(self.tuning.get(f'Th232_U238_ratios_{index}', 0.02))
-
+    
+        s_block = float(self.tuning_block.get(f'Block_{index}', 0.10))
+    
+        # relative weights inside the block
+        w_th   = 1.00
+        w_u234 = 0.60
+        w_t30  = 0.60
+        w_t32  = 0.60
+    
         th_new    = th_cur.copy()
         U234_new  = U234_cur.copy()
         Th230_new = Th230_cur.copy()
         Th232_new = Th232_cur.copy()
-
-        th_new[index]    = np.exp(np.log(max(th_cur[index], 1e-12))    + self.rng.normal(0.0, s_th))
-        U234_new[index]  = np.exp(np.log(max(U234_cur[index], 1e-12))  + self.rng.normal(0.0, s_u234))
-        Th230_new[index] = np.exp(np.log(max(Th230_cur[index], 1e-12)) + self.rng.normal(0.0, s_t30))
-        Th232_new[index] = np.exp(np.log(max(Th232_cur[index], 1e-12)) + self.rng.normal(0.0, s_t32))
-
+    
+        th_new[index]    = np.exp(np.log(max(th_cur[index],    1e-12)) + self.rng.normal(0.0, w_th   * s_block))
+        U234_new[index]  = np.exp(np.log(max(U234_cur[index],  1e-12)) + self.rng.normal(0.0, w_u234 * s_block))
+        Th230_new[index] = np.exp(np.log(max(Th230_cur[index], 1e-12)) + self.rng.normal(0.0, w_t30  * s_block))
+        Th232_new[index] = np.exp(np.log(max(Th232_cur[index], 1e-12)) + self.rng.normal(0.0, w_t32  * s_block))
+    
         th_new[index] = float(np.clip(th_new[index], self.TH0_MIN, self.TH0_MAX))
     
         return (th_new, U234_new, Th230_new, Th232_new)
 
+    def SingleParameter_Move(self, theta, index, param_name=None):
+        th_cur, U234_cur, Th230_cur, Th232_cur = theta
+    
+        if param_name is None:
+            param_name = self.rng.choice([
+                'Initial_Thorium',
+                'U234_U238_ratios',
+                'Th230_U238_ratios',
+                'Th232_U238_ratios',
+            ])
+    
+        th_new    = th_cur.copy()
+        U234_new  = U234_cur.copy()
+        Th230_new = Th230_cur.copy()
+        Th232_new = Th232_cur.copy()
+    
+        key = f'{param_name}_{index}'
+        s = float(self.tuning_single.get(key, 0.05))
+    
+        if param_name == 'Initial_Thorium':
+            th_new[index] = np.exp(np.log(max(th_cur[index], 1e-12)) + self.rng.normal(0.0, s))
+            th_new[index] = float(np.clip(th_new[index], self.TH0_MIN, self.TH0_MAX))
+    
+        elif param_name == 'U234_U238_ratios':
+            U234_new[index] = np.exp(np.log(max(U234_cur[index], 1e-12)) + self.rng.normal(0.0, s))
+    
+        elif param_name == 'Th230_U238_ratios':
+            Th230_new[index] = np.exp(np.log(max(Th230_cur[index], 1e-12)) + self.rng.normal(0.0, s))
+    
+        elif param_name == 'Th232_U238_ratios':
+            Th232_new[index] = np.exp(np.log(max(Th232_cur[index], 1e-12)) + self.rng.normal(0.0, s))
+    
+        else:
+            raise ValueError(f"Unknown parameter name: {param_name}")
+    
+        return (th_new, U234_new, Th230_new, Th232_new), key
+
+
+    # ---------------- Propose State -----------------
+    def propose_state(self, theta, index):
+        r = self.rng.random()
+    
+        if r < self.p_block:
+            theta_prop = self.PerSampleBlock_Move(theta, index)
+            move_type = "block"
+            moved_keys = [f'Block_{index}']
+            return theta_prop, move_type, moved_keys
+    
+        else:
+            theta_prop, single_key = self.SingleParameter_Move(theta, index)
+            move_type = "single"
+            moved_keys = [single_key]
+            return theta_prop, move_type, moved_keys
+    
 
     # ---------------- tuning adaptation ----------------
     def adapt_one(self, key, rate, t, target=0.25, smin=1e-5, smax=1.0):
         eta = 1.0 / np.sqrt(max(1, t))
-        log_s = np.log(max(float(self.tuning[key]), 1e-12))
-        log_s += eta * (rate - target)
-        self.tuning[key] = float(np.clip(np.exp(log_s), smin, smax))
+    
+        if key in self.tuning_block:
+            log_s = np.log(max(float(self.tuning_block[key]), 1e-12))
+            log_s += eta * (rate - target)
+            self.tuning_block[key] = float(np.clip(np.exp(log_s), smin, smax))
+    
+        elif key in self.tuning_single:
+            log_s = np.log(max(float(self.tuning_single[key]), 1e-12))
+            log_s += eta * (rate - target)
+            self.tuning_single[key] = float(np.clip(np.exp(log_s), smin, smax))
+    
+        else:
+            raise KeyError(f"Unknown tuning key: {key}")
 
     # ---------------- I/O ----------------
     def Save_Parameters_and_Tuning(self, theta, chain_id):
-    
-        tf_file =  self.save_dir / f'tuning_{self.sample_name}_{chain_id}.pkl'
+        tf_file = self.save_dir / f'tuning_{self.sample_name}_{chain_id}.pkl'
         theta_file = self.save_dir / f'{self.sample_name}_theta_{chain_id}.pkl'
+    
         with open(theta_file, 'wb') as f:
             pickle.dump(theta, f)
+    
+        tuning_payload = {
+            "tuning_block": self.tuning_block,
+            "tuning_single": self.tuning_single,
+        }
         with open(tf_file, 'wb') as f:
-            pickle.dump(self.tuning, f)
-
+            pickle.dump(tuning_payload, f)
+    
     # ===================== MAIN MCMC FUNCTION =====================
     def MCMC(self, theta, iterations, chain_id):
         start_time = time.time()
@@ -649,11 +724,22 @@ class IBIS_MCMC:
         tf_file = self.save_dir / f'tuning_{self.sample_name}_{chain_id}.pkl'
         if tf_file.exists() and self.Start_from_pickles:
             with open(tf_file, 'rb') as f:
-                self.tuning = pickle.load(f)
+                payload = pickle.load(f)
+        
+            if isinstance(payload, dict) and ("tuning_block" in payload) and ("tuning_single" in payload):
+                self.tuning_block = payload["tuning_block"]
+                self.tuning_single = payload["tuning_single"]
+            else:
+                # backward compatibility with old tuning pickle
+                pass
 
         # counters
-        self.proposal_counts = {k: 0 for k in self.keys}
-        self.accept_counts   = {k: 0 for k in self.keys}
+        all_keys = self.block_keys + self.single_keys
+        self.proposal_counts = {k: 0 for k in all_keys}
+        self.accept_counts   = {k: 0 for k in all_keys}
+        
+        self._last_prop_counts = {k: 0 for k in all_keys}
+        self._last_acc_counts  = {k: 0 for k in all_keys}
 
         self.diag = {
             "accepted": 0,
@@ -671,8 +757,6 @@ class IBIS_MCMC:
             "mh_reject": 0,
         })
 
-        self._last_prop_counts = {k: 0 for k in self.keys}
-        self._last_acc_counts  = {k: 0 for k in self.keys}
         if not hasattr(self, "_adapt_step"):
             self._adapt_step = 0
 
@@ -710,22 +794,40 @@ class IBIS_MCMC:
         def _register(idx, outcome):
             self.diag[outcome] += 1
             self.rej_by_index[idx][outcome] += 1
-
-        def _adapt_window(target=0.30, min_props=20):
+            
+        def _adapt_window(target=0.30, min_props_block=20, min_props_single=3):
             self._adapt_step += 1
             t = self._adapt_step
-            for key in self.tuning:
+        
+            for key in self.block_keys:
                 p_tot = self.proposal_counts.get(key, 0)
                 a_tot = self.accept_counts.get(key, 0)
                 p_last = self._last_prop_counts.get(key, 0)
                 a_last = self._last_acc_counts.get(key, 0)
+        
                 dp = p_tot - p_last
                 da = a_tot - a_last
-
-                if dp >= min_props:
+        
+                if dp >= min_props_block:
                     rate = da / dp
                     self.adapt_one(key, rate, t, target=target, smin=1e-5, smax=1.0)
-
+        
+                self._last_prop_counts[key] = p_tot
+                self._last_acc_counts[key]  = a_tot
+        
+            for key in self.single_keys:
+                p_tot = self.proposal_counts.get(key, 0)
+                a_tot = self.accept_counts.get(key, 0)
+                p_last = self._last_prop_counts.get(key, 0)
+                a_last = self._last_acc_counts.get(key, 0)
+        
+                dp = p_tot - p_last
+                da = a_tot - a_last
+        
+                if dp >= min_props_single:
+                    rate = da / dp
+                    self.adapt_one(key, rate, t, target=target, smin=1e-5, smax=1.0)
+        
                 self._last_prop_counts[key] = p_tot
                 self._last_acc_counts[key]  = a_tot
 
@@ -750,9 +852,17 @@ class IBIS_MCMC:
                 f"worst_adj_violation  : {worst}\n"
             )
 
-            print("\n--- tuning snapshot ---")
+            print("\n--- block tuning snapshot ---")
+            vals = list(self.tuning_block.values())
+            if vals:
+                print(
+                    f"Block scales           median={np.median(vals):.4g}  "
+                    f"min={np.min(vals):.4g}  max={np.max(vals):.4g}"
+                )
+            
+            print("\n--- single-move tuning snapshot ---")
             for prefix in ["Initial_Thorium_", "U234_U238_ratios_", "Th230_U238_ratios_", "Th232_U238_ratios_"]:
-                vals = [v for k, v in self.tuning.items() if k.startswith(prefix)]
+                vals = [v for k, v in self.tuning_single.items() if k.startswith(prefix)]
                 if vals:
                     print(
                         f"{prefix:20s} median={np.median(vals):.4g}  "
@@ -772,17 +882,12 @@ class IBIS_MCMC:
 
         for i in pbar:
             idx = int(self.rng.integers(0, Ndata))
-
-            block_keys = [
-                f'Initial_Thorium_{idx}',
-                f'U234_U238_ratios_{idx}',
-                f'Th230_U238_ratios_{idx}',
-                f'Th232_U238_ratios_{idx}',
-            ]
-            for key in block_keys:
+            
+            theta_prop, move_type, moved_keys = self.propose_state(theta, idx)
+            
+            for key in moved_keys:
                 self.proposal_counts[key] += 1
-
-            theta_prop = self.PerSampleBlock_Move(theta, idx)
+            
             logp_prop, ages_prop = self.log_posterior(theta_prop, ages_prev=ages_cur)
 
             if not self._theta_is_finite_positive(theta_prop):
@@ -800,9 +905,10 @@ class IBIS_MCMC:
                     theta = theta_prop
                     logp_cur = float(logp_prop)
                     ages_cur = np.asarray(ages_prop, float)
-
-                    for key in block_keys:
+                
+                    for key in moved_keys:
                         self.accept_counts[key] += 1
+                
                     _register(idx, "accepted")
                 else:
                     _register(idx, "mh_reject")
@@ -824,8 +930,8 @@ class IBIS_MCMC:
             if i > 50 and i % 1000 == 0:
                 self.Save_Parameters_and_Tuning(theta, chain_id)
 
-            if i > 50 and (i % 1000 == 0) and (i < self.burn_in):
-                _adapt_window(target=0.30, min_props=20)
+            if i > 50 and (i % 2000 == 0) and (i < self.burn_in):
+                _adapt_window(target=0.30, min_props_block=20, min_props_single=3)
 
         elapsed = time.time() - start_time
         if chain_id == 0:
@@ -985,6 +1091,60 @@ class IBIS_MCMC:
         all_draws = np.vstack(chains)
         return self._summarize_draws(all_draws, center="median", lower=0.0)
 
+
+    # Chain diagnostics
+    def Chain_Diagnostic_Vector(self, param = 'z1'):
+        # Get chain stuffs
+        results_dicts = self.Get_Results_Dictionary()
+        samples = np.zeros([self.n_chains, results_dicts[0][f'{param}_1'].shape[0],
+                           results_dicts[0][f'{param}_1'].shape[1]])
+    
+        for i in range(self.n_chains):
+            samples[i,:, :] = results_dicts[i][f'{param}_{i+1}']
+    
+        m, n , d = samples.shape
+        if m < 2:
+            raise ValueError("Need a minimum of 2 chains")
+        
+        if n < 2:
+            raise ValueError("Need a minimum of 2 samples")
+        
+        # Caculate an rhat value
+        # Gets at how variable the between and within chain
+        # state is.
+        # This is more of a rule of thumb but is good as a guide for
+        # the output
+        chain_means = np.mean(samples, axis = 1)
+        chain_vars = np.var(samples, axis = 1, ddof = 1)
+        B = n * np.var(chain_means, axis = 0, ddof = 1)
+        W = np.mean(chain_vars, axis = 0)
+        var_hat = ((n - 1) / n) * W + (1/n) * B
+        rhat = np.sqrt(var_hat / W)
+            
+        return rhat
+
+
+    def Chain_diag_dataframe(self):
+
+        inThor_rhat = self.Chain_Diagnostic_Vector(param = 'z2')
+        r48_rhat = self.Chain_Diagnostic_Vector(param = 'z3')
+        r28_rhat = self.Chain_Diagnostic_Vector(param = 'z4')
+        r08_rhat = self.Chain_Diagnostic_Vector(param = 'z5')
+
+        # Make a dataframe
+        # Number samples from top to bottom (youngest to oldest)
+        sample_idx = np.arange(inThor_rhat.size) + 1
+
+        df = pd.DataFrame({"Sample index (top to bottom)": sample_idx,
+                          "Initial thorium r-hat": inThor_rhat,
+                          "234U_238U r-hat": r48_rhat,
+                          "232Th_238U r-hat": r28_rhat,
+                          "230Th_238U r-hat": r08_rhat,
+                          })
+
+        return df
+        
+
     def MakeSummaryDataFrame(self):
         age_c, (age_lo68, age_hi68), (age_lo95, age_hi95), age_sigma = self.Get_Useries_Ages()
         U0_c,  (U0_lo68,  U0_hi68),  (U0_lo95,  U0_hi95),  U0_sigma  = self.Get_234U_initial()
@@ -1034,6 +1194,8 @@ class IBIS_MCMC:
         df_all["U0_err_hi95"] = np.maximum(U0_hi95 - U0_c, 0.0)
 
         return df_all
+        
+        
     def SummaryDataFrame(self):
         df_all = self.MakeSummaryDataFrame()
         output_path = self.save_dir /f"{self.sample_name}_ibis_summary.csv"
