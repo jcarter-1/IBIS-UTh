@@ -484,7 +484,8 @@ class IBIS:
                                               n_chains = self.n_chains,
                                               Start_from_pickles = self.Start_from_pickles,
                                               method = self.method,
-                                              save_dir = self.save_dir)
+                                              save_dir = self.save_dir,
+                                              print_diagnostics = self.meta.get('print_diagnostics', False))
                                               
         return self.Ibis_Chains.Initial_Guesses_for_Model()
                 
@@ -502,7 +503,8 @@ class IBIS:
                                               n_chains = self.n_chains,
                                               Start_from_pickles = self.Start_from_pickles,
                                               method = self.method,
-                                              save_dir = self.save_dir)
+                                              save_dir = self.save_dir,
+                                              print_diagnostics = self.meta.get('print_diagnostics', False))
 
         self.Ibis_Chains.Run_MCMC();
         self.Chain_run = True
@@ -613,23 +615,6 @@ class IBIS:
         df_all.to_csv(output_path, index=False)
         print(f"Complete summary saved to: {output_path}")
 
-    # These don't exist - but I will add them
-    # Existed in earlier version that needs some updating
-    
-    #def Get_Chain_Stats_Thor(self):
-    #    return self.Ibis_Chains.In_Thor_Chain_Stats()
-
-    #def Get_In_Thor(self):
-    #    return self.Ibis_Chains.Get_Initial_Thoriums()
-        
-    #def Get_Chain_Stats_Uages(self):
-    #    return self.Ibis_Chains.Useries_Age_Chain_Stats()
-
-    #def Get_Chain_Stats_Lam_U234(self):
-    #    return self.Ibis_Chains.lam234_Chain_Stats()
-
-    #def Get_Chain_Stats_Lam_Th230(self):
-    #    return self.Ibis_Chains.Th230_Chain_Stats()
     
     def preprocess_boundary_ages(self,
         median,
