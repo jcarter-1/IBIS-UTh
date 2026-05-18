@@ -135,7 +135,7 @@ class IBIS_MCMC:
                  Age_Uncertainties, data, sample_name='SAMPLE_NAME',
                  n_chains=3, iterations=50000, burn_in=10000,
                  Start_from_pickles=True, method='thoth',
-                 save_dir = None, print_diagnostic = False):
+                 save_dir = None, print_diagnostics = False):
 
         self.method = method
         self.data = data
