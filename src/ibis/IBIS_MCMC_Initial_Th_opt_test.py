@@ -147,7 +147,7 @@ class IBIS_MCMC:
         self.depths = np.asarray(self.data['Depths'].values, float)
         self._depth_order = np.argsort(self.depths)
         self.depths = self.depths[self._depth_order]
-        self.print_diagnostic = print_diagnostic
+        self.print_diagnostics = print_diagnostics
 
         self.Age_Solve_Max = 5.0 * float(self.Age_Maximum)
         self.Age_Uncertainties = np.asarray(Age_Uncertainties, float)[self._depth_order]
@@ -927,7 +927,7 @@ class IBIS_MCMC:
 
             
             
-            if chain_id == 0 and i > 0 and i % 5000 == 0 and self.print_diagnostic:
+            if chain_id == 0 and i > 0 and i % 5000 == 0 and self.print_diagnostics:
                 _print_diag(i)
 
             if i > 50 and i % 1000 == 0:
