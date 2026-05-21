@@ -9,7 +9,8 @@ import dill as pickle
 from pathlib import Path
 import os
 import sys
-
+from scipy.ndimage import gaussian_filter1d
+from scipy.interpolate import PchipInterpolator
 
 class IBIS_Strat2:
     """
@@ -187,12 +188,38 @@ class IBIS_Strat2:
             raise ValueError("No posterior samples available.")
         return [np.percentile(X, q, axis=0) for q in qs]
 
-    def triangle_logpdf_scalar(sefl, x):
-        x = float(x)
-        if x < 0.0 or x > 1.0:
-            return -np.inf
-        return np.log(1 * x)
+    def _smooth_to_z(self, smooth):
         
+        s_min = 1e-15
+        s = float(smooth)
+         
+        log_s_min = np.log(s_min)
+        z = (np.log(s) - log_s_min) / (0.0 - log_s_min)
+        
+        return z
+        
+    def _z_to_smooth(self, z):
+        s_min = 1e-15
+        z = float(z)
+        log_s_min = np.log(s_min)
+        z = (np.log(s) - log_s_min) / (0.0 - log_s_min)
+        return float(np.exp(log_s))
+        
+    def triangle_logpdf_logsmooth(self, smooth, eps = 1e-15):
+        s = float(smooth)
+        s_min = 1e-15
+        
+        if not np.isfinite(s):
+            return -np.inf
+        if s < s_min or s > 1.0:
+            return - np.inf
+        z = self._smooth_to_z(s)
+        
+        if z <= 0.0 or z > 1.0:
+            return -np.inf
+        
+        log_range = -np.log(s_min)
+        return (np.log(2) + np.log(max(z, eps)) - np.log(s) - np.log(log_range))
     
     # =========================================================
     # Prior
@@ -205,22 +232,26 @@ class IBIS_Strat2:
 
     def Log_Priors(self, Age_Model, smooth):
         Age_Model = np.asarray(Age_Model, float)
-    
+
         if np.any(~np.isfinite(Age_Model)):
             return -np.inf
         if np.any(np.diff(Age_Model) <= 0.0):
             return -np.inf
-        if np.min(Age_Model) < 0:
+        if np.min(Age_Model) < self.age_floor:
             return -np.inf
-        if np.max(Age_Model) > 1e6:
+        if np.max(Age_Model) > self.age_ceiling:
             return -np.inf
-        if not np.isfinite(smooth) or smooth <= 0:
+        if not np.isfinite(smooth):
             return -np.inf
-        # lognormal prior on smooth
-        smooth_lp = self.triangle_logpdf_scalar(smooth)
-    
-        rw2_lprior_ = self._rw2_logprior(Age_Model, smooth)
-        return float(smooth_lp + rw2_lprior_)
+
+        smooth_lp = self.triangle_logpdf_logsmooth(smooth)
+
+        if not np.isfinite(smooth_lp):
+            return -np.inf
+
+        rw2_lprior = self._rw2_logprior(Age_Model, smooth)
+
+        return float(smooth_lp + rw2_lprior)
     
     # =========================================================
     # Likelihood
@@ -309,25 +340,37 @@ class IBIS_Strat2:
             trial = base + np.random.normal(0.0, 0.25 * sigma0, size=base.size)
             trial = self._project_monotone(trial)
         
-            smooth_param = float(np.random.rand())
+            smooth_param = float(np.exp(np.random.normal(np.log(self.smoothness_mu),
+                                self.smoothness_sigma * 0.25)))
             starts.append([trial, smooth_param])
         return starts
 
     # =========================================================
     # Proposals
     # =========================================================
+    def _logit(self, x, eps=1e-12):
+        x = np.clip(float(x), eps, 1.0 - eps)
+        return np.log(x / (1.0 - x))
+    
+    
+    def _inv_logit(self, z):
+        return 1.0 / (1.0 + np.exp(-z))
+    
+    
     def _propose_smooth_rate(self, Age_Model, smooth, scale):
-        """
-        Proposal for the Hyperparameter
-        - This is a bounded positive only parameter
-        so going to do a move log move
-        """
-        S = float(smooth)
-        eta = np.log(max(S, 1e-30))
-        
-        eta_prop = eta + np.random.normal(0.0, scale)
-        smooth_prop = float(np.exp(eta_prop))
-        return Age_Model, smooth_prop
+        # May need to add jacobian here?
+        s = np.clip(float(smooth), 1e-12, 1.0 - 1e-12)
+
+        z = self._logit(s)
+        z_prop = z + np.random.normal(0.0, scale)
+        s_prop = self._inv_logit(z_prop)
+
+        log_q_ratio = (
+            np.log(s_prop) + np.log1p(-s_prop)
+            - np.log(s) - np.log1p(-s)
+        )
+
+        return Age_Model, float(s_prop)
     
     def _propose_local(self, Age_Model, smooth, scale):
         """
@@ -669,3 +712,205 @@ class IBIS_Strat2:
         ax.set_xlabel('Smoothness ($\gamma$)')
         ax.set_ylabel('Density')
         return fig, ax
+
+
+    def Get_Smoothed_Age_Model_For_Plot(
+        self,
+        n_plot=1000,
+        smooth_sigma=35,
+        method="pchip",
+        enforce_monotone=True,
+    ):
+        """
+        Make a smooth Bayesian plotting envelope.
+
+        This does not change the MCMC model.
+        It only smooths posterior draws for visualization.
+        
+        """
+
+        age_draws = self._stack_draws("age")
+
+        depth_plot = np.linspace(
+            float(np.min(self.depth_grid)),
+            float(np.max(self.depth_grid)),
+            int(n_plot),
+        )
+
+        smooth_draws = np.empty((age_draws.shape[0], depth_plot.size), dtype=float)
+
+        for i in range(age_draws.shape[0]):
+
+            if method == "linear":
+                y = np.interp(depth_plot, self.depth_grid, age_draws[i])
+
+            elif method == "pchip":
+                f = PchipInterpolator(
+                    self.depth_grid,
+                    age_draws[i],
+                    extrapolate=True,
+                )
+                y = f(depth_plot)
+
+            else:
+                raise ValueError("method must be 'linear' or 'pchip'.")
+
+            y_smooth = gaussian_filter1d(
+                y,
+                sigma=float(smooth_sigma),
+                mode="nearest",
+            )
+
+            if enforce_monotone:
+                y_smooth = np.maximum.accumulate(y_smooth)
+
+            smooth_draws[i, :] = y_smooth
+
+        q025, q16, q25, q50, q75, q84, q975 = np.percentile(
+            smooth_draws,
+            [2.5, 16, 25, 50, 75, 84, 97.5],
+            axis=0,
+        )
+
+        return {
+            "depth": depth_plot,
+            "draws": smooth_draws,
+            "q025": q025,
+            "q16": q16,
+            "q25": q25,
+            "q50": q50,
+            "q75": q75,
+            "q84": q84,
+            "q975": q975,
+        }
+        
+    def Get_Age_Depth_Plot_HighRes(
+        self,
+        n_plot=5000,
+        smooth_sigma=35,
+        method="pchip",
+        figsize=(6.2, 7.2),
+        age_units="yr",
+        sample_color="#5E81AC",
+        show_draws=True,
+        n_draws=150,
+    ):
+        """
+        Smooth Bayesian age-depth plot with nested credible envelopes.
+        """
+
+        out = self.Get_Smoothed_Age_Model_For_Plot(
+            n_plot=n_plot,
+            smooth_sigma=smooth_sigma,
+            method=method,
+            enforce_monotone=True,
+        )
+
+        depth = out["depth"]
+
+        fig, ax = plt.subplots(figsize=figsize)
+
+        if show_draws:
+            draws = out["draws"]
+            n = min(int(n_draws), draws.shape[0])
+            idx = np.random.choice(draws.shape[0], size=n, replace=False)
+
+            for j in idx:
+                ax.plot(
+                    draws[j],
+                    depth,
+                    color="0.65",
+                    lw=0.4,
+                    alpha=0.06,
+                    zorder=1,
+                )
+
+        # 95% credible envelope
+        ax.fill_betweenx(
+            depth,
+            out["q025"],
+            out["q975"],
+            color="0.75",
+            alpha=0.45,
+            linewidth=0,
+            label="95% credible envelope",
+            zorder=2,
+        )
+
+        # 68% credible envelope
+        ax.fill_betweenx(
+            depth,
+            out["q16"],
+            out["q84"],
+            color="0.55",
+            alpha=0.45,
+            linewidth=0,
+            label="68% credible envelope",
+            zorder=3,
+        )
+
+        # Interquartile envelope
+        ax.fill_betweenx(
+            depth,
+            out["q25"],
+            out["q75"],
+            color="0.35",
+            alpha=0.35,
+            linewidth=0,
+            label="50% credible envelope",
+            zorder=4,
+        )
+
+        # Median model
+        ax.plot(
+            out["q50"],
+            depth,
+            color="k",
+            lw=2.2,
+            label="Posterior median",
+            zorder=5,
+        )
+
+        # Data
+        xerr = np.vstack([
+            self.low_age_err * 2,
+            self.high_age_err * 2,
+        ])
+
+        ax.errorbar(
+            self.u_ages,
+            self.Depths,
+            xerr=xerr,
+            yerr=self.Depths_err,
+            fmt="o",
+            markersize=5.5,
+            markerfacecolor=sample_color,
+            markeredgecolor="k",
+            markeredgewidth=0.8,
+            ecolor="0.20",
+            elinewidth=1.0,
+            capsize=3,
+            label="U-series ages (95% CI)",
+            zorder=10,
+        )
+
+        ax.invert_yaxis()
+
+        ax.set_xlabel(f"Age ({age_units})")
+        ax.set_ylabel("Depth")
+
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+        ax.grid(True, alpha=0.16, linewidth=0.7)
+
+        ax.legend(
+            frameon=False,
+            loc="best",
+            handlelength=2.0,
+        )
+
+        fig.tight_layout()
+
+        return fig, ax
+

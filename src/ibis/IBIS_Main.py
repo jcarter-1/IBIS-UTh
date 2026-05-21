@@ -94,6 +94,7 @@ class IBIS:
         data_uncertainty_level = self.data_uncertainty_level)
         # Get refined dataset
         self.df_reduced = self.config.Get_Measured_Ratios()
+        self.quick_data_check()
         # Sample
         self.sample_name = sample_name
         # Meta Data
@@ -195,6 +196,62 @@ class IBIS:
         if show_bird is True:
             print(self.IBIS_intro) 
             print(self.IBIS_BIRD)
+            
+    def quick_data_check(self, tiny=1e-20):
+        """
+        Check self.df_reduced for:
+        - NaN
+        - inf / -inf
+        - exact zeros
+        - extremely small absolute values, e.g. abs(x) <= 1e-20
+        across all numeric columns.
+        """
+
+        if self.df_reduced is None:
+            raise ValueError("self.df_reduced has not been created yet.")
+
+        if self.df_reduced.empty:
+            raise ValueError("self.df_reduced is empty.")
+
+        df = self.df_reduced.apply(pd.to_numeric, errors="coerce")
+
+        nan_mask = df.isna()
+        inf_mask = np.isinf(df)
+        zero_mask = df.eq(0)
+        tiny_mask = df.abs().le(tiny)
+
+        if nan_mask.any().any():
+            bad_rows = df.index[nan_mask.any(axis=1)].tolist()
+            bad_cols = df.columns[nan_mask.any(axis=0)].tolist()
+            raise ValueError(
+                f"NaN values found.\nRows: {bad_rows}\nColumns: {bad_cols}"
+            )
+
+        if inf_mask.any().any():
+            bad_rows = df.index[inf_mask.any(axis=1)].tolist()
+            bad_cols = df.columns[inf_mask.any(axis=0)].tolist()
+            raise ValueError(
+                f"Infinite values found.\nRows: {bad_rows}\nColumns: {bad_cols}"
+            )
+
+        if zero_mask.any().any():
+            bad_rows = df.index[zero_mask.any(axis=1)].tolist()
+            bad_cols = df.columns[zero_mask.any(axis=0)].tolist()
+            raise ValueError(
+                f"Zero values found.\nRows: {bad_rows}\nColumns: {bad_cols}"
+            )
+
+        if tiny_mask.any().any():
+            bad_rows = df.index[tiny_mask.any(axis=1)].tolist()
+            bad_cols = df.columns[tiny_mask.any(axis=0)].tolist()
+            raise ValueError(
+                f"Extremely small values found with abs(x) <= {tiny}.\n"
+                f"Rows: {bad_rows}\nColumns: {bad_cols}"
+            )
+
+        return True
+    
+        
 
     def Get_Top_Age(self): 
         if not self.Top_Age_Stal: 
