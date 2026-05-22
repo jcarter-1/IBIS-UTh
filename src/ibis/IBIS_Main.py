@@ -660,7 +660,7 @@ class IBIS:
         df_ibis = self.Ibis_Chains.MakeSummaryDataFrame()
         df_data = self.df_reduced
         df_combined = df_ibis.join(df_data)
-        uncorr_ages, uncorr_ages_err, _ = self.Get_IBIS_Bounds()
+        uncorr_ages, _, uncorr_ages_err = self.Get_IBIS_Bounds()
         df_combined['Uncorrected age (a)'] = uncorr_ages
         df_combined['Uncorrected age 1sigma (a)'] = uncorr_ages_err
         

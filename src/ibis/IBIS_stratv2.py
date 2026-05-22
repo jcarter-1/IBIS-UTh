@@ -786,7 +786,7 @@ class IBIS_Strat2:
         
     def Get_Age_Depth_Plot_HighRes(
         self,
-        n_plot=5000,
+        n_plot=500,
         smooth_sigma=35,
         method="pchip",
         figsize=(6.2, 7.2),
