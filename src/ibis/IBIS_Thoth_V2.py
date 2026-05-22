@@ -453,42 +453,105 @@ class IBIS_Thoth_Robust:
     # --------------------------
     # boutique r02 proposal
     # --------------------------
-    def detrital_sample(self, n):
-        a, b = (0.0 - 0.8) / 0.4, np.inf
-        return truncnorm(a=a, b=b, loc=0.8, scale=0.4).rvs(size=int(n))
+    def bulk_earth_sample(self, n):
+        """
+        Bulk-earth style prior for (230Th/232Th)_A0.
 
-    def all_thorium(self, n):
-        # your constructed lognormal
+        """
+        n = int(n)
+
+        mu = float(self.meta.get("bulk_r02_mu", 0.8))
+        sigma = float(self.meta.get("bulk_r02_sigma", 0.4))
+        lo = float(self.meta.get("r02_min", 1e-6))
+
+        a = (lo - mu) / sigma
+        b = np.inf
+
+        return truncnorm(a=a, b=b, loc=mu, scale=sigma).rvs(size=n)
+
+    def flexible_thorium_sample(self, n):
+        """
+        Flexible positive prior for (230Th/232Th)_A0.
+
+        """
+        n = int(n)
+
+        mode = float(self.meta.get("flex_r02_mode", 0.8))
+        q99 = float(self.meta.get("flex_r02_q99", 50.0))
+
         z = norm.ppf(0.99)
-        C = np.log(0.8) - np.log(50.0)
-        disc = z**2 - 4*C
-        sigma = (-z + np.sqrt(disc)) / 2
-        mu = np.log(0.8) + sigma**2
-        return lognorm(s=sigma, scale=np.exp(mu)).rvs(size=int(n))
+
+
+        C = np.log(q99) - np.log(mode)
+
+        sigma = (-z + np.sqrt(z**2 + 4*C)) / 2
+        mu = np.log(mode) + sigma**2
+
+        return lognorm(s=sigma, scale=np.exp(mu)).rvs(size=n)
 
     def boutique_thoriums(self, n):
+        """
+        Mixture prior:
+        - one component is bulk-earth-like
+        - one component is broad and flexible
+
+        """
         n = int(n)
-        fract = float(self.meta.get("fraction_det", 0.5))
-        det = (np.random.rand(n) < fract)
+
+        fraction_bulk = float(self.meta.get("fraction_bulk", 0.5))
+
+        is_bulk = np.random.rand(n) < fraction_bulk
 
         x = np.empty(n, float)
-        x[det] = self.detrital_sample(det.sum())
-        x[~det] = self.all_thorium((~det).sum())
 
-        np.clip(
-            x,
-            float(self.meta.get("r02_clip_lo", 0.001)),
-            float(self.meta.get("r02_clip_hi", 1000.0)),
-            out=x
-        )
+        x[is_bulk] = self.bulk_earth_sample(is_bulk.sum())
+        x[~is_bulk] = self.flexible_thorium_sample((~is_bulk).sum())
+
         return x
 
-    def boutique_thoriums_bounded(self, n, r02_hi, r02_lo=None):
+    def boutique_thoriums_bounded(self, n, r02_hi, r02_lo=None, max_iter=100):
+        """
+        Draw from boutique_thoriums but reject values outside bounds.
+
+        """
+        n = int(n)
+
         if r02_lo is None:
-            r02_lo = float(self.meta.get("r02_clip_lo", 0.001))
-        x = self.boutique_thoriums(n)
-        np.clip(x, float(r02_lo), float(r02_hi), out=x)
-        return x
+            r02_lo = float(self.meta.get("r02_min", 1e-6))
+
+        r02_lo = float(r02_lo)
+        r02_hi = float(r02_hi)
+
+        if r02_lo <= 0:
+            raise ValueError("r02_lo must be > 0.")
+        if r02_hi <= r02_lo:
+            raise ValueError("r02_hi must be greater than r02_lo.")
+
+        out = np.empty(n, float)
+        filled = 0
+
+        for _ in range(max_iter):
+            remaining = n - filled
+            if remaining <= 0:
+                break
+
+            proposal = self.boutique_thoriums(max(remaining * 2, 100))
+
+            good = proposal[(proposal > r02_lo) & (proposal < r02_hi)]
+
+            take = min(good.size, remaining)
+
+            if take > 0:
+                out[filled:filled + take] = good[:take]
+                filled += take
+
+        if filled < n:
+            raise RuntimeError(
+                f"Only filled {filled}/{n} samples. "
+                "Bounds may be too restrictive for the proposal distribution."
+            )
+
+        return out
 
     # --------------------------
     # r02 uncertainty proposal (with a ranking penalty)

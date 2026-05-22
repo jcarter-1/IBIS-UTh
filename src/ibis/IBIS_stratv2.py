@@ -716,38 +716,51 @@ class IBIS_Strat2:
 
     def Get_Smoothed_Age_Model_For_Plot(
         self,
-        n_plot=1000,
-        smooth_sigma=35,
-        method="pchip",
+        n_plot=500,
+        smooth_sigma=15,
+        method="linear",
         enforce_monotone=True,
+        max_envelope_draws=1500,
+        max_visible_draws=100,
+        random_seed=123,
     ):
         """
-        Make a smooth Bayesian plotting envelope.
+        Memory-safe smooth Bayesian plotting envelope.
 
-        This does not change the MCMC model.
-        It only smooths posterior draws for visualization.
-        
+        Key changes:
+        - Uses only a random subset of posterior draws for plotting/envelopes.
+        - Stores smoothed draw matrix as float32, not float64.
+        - Avoids storing every posterior draw at high resolution.
+        - Defaults to linear interpolation because it is much faster than PCHIP.
         """
 
+        rng = np.random.default_rng(random_seed)
+
         age_draws = self._stack_draws("age")
+        n_total = age_draws.shape[0]
+
+        n_env = min(int(max_envelope_draws), n_total)
+        idx_env = rng.choice(n_total, size=n_env, replace=False)
 
         depth_plot = np.linspace(
             float(np.min(self.depth_grid)),
             float(np.max(self.depth_grid)),
             int(n_plot),
+            dtype=np.float32,
         )
 
-        smooth_draws = np.empty((age_draws.shape[0], depth_plot.size), dtype=float)
+        smooth_draws = np.empty((n_env, depth_plot.size), dtype=np.float32)
 
-        for i in range(age_draws.shape[0]):
+        for out_i, draw_i in enumerate(idx_env):
+            draw = age_draws[draw_i]
 
             if method == "linear":
-                y = np.interp(depth_plot, self.depth_grid, age_draws[i])
+                y = np.interp(depth_plot, self.depth_grid, draw)
 
             elif method == "pchip":
                 f = PchipInterpolator(
                     self.depth_grid,
-                    age_draws[i],
+                    draw,
                     extrapolate=True,
                 )
                 y = f(depth_plot)
@@ -764,7 +777,7 @@ class IBIS_Strat2:
             if enforce_monotone:
                 y_smooth = np.maximum.accumulate(y_smooth)
 
-            smooth_draws[i, :] = y_smooth
+            smooth_draws[out_i, :] = y_smooth.astype(np.float32)
 
         q025, q16, q25, q50, q75, q84, q975 = np.percentile(
             smooth_draws,
@@ -772,9 +785,12 @@ class IBIS_Strat2:
             axis=0,
         )
 
+        n_vis = min(int(max_visible_draws), smooth_draws.shape[0])
+        idx_vis = rng.choice(smooth_draws.shape[0], size=n_vis, replace=False)
+
         return {
             "depth": depth_plot,
-            "draws": smooth_draws,
+            "visible_draws": smooth_draws[idx_vis],
             "q025": q025,
             "q16": q16,
             "q25": q25,
@@ -782,21 +798,27 @@ class IBIS_Strat2:
             "q75": q75,
             "q84": q84,
             "q975": q975,
+            "n_total_draws": n_total,
+            "n_envelope_draws": n_env,
         }
-        
+
+
     def Get_Age_Depth_Plot_HighRes(
         self,
         n_plot=500,
-        smooth_sigma=35,
-        method="pchip",
+        smooth_sigma=15,
+        method="linear",
         figsize=(6.2, 7.2),
         age_units="yr",
         sample_color="#5E81AC",
         show_draws=True,
-        n_draws=150,
+        n_draws=75,
+        max_envelope_draws=1500,
+        random_seed=123,
     ):
         """
         Smooth Bayesian age-depth plot with nested credible envelopes.
+        Memory-safe version.
         """
 
         out = self.Get_Smoothed_Age_Model_For_Plot(
@@ -804,6 +826,9 @@ class IBIS_Strat2:
             smooth_sigma=smooth_sigma,
             method=method,
             enforce_monotone=True,
+            max_envelope_draws=max_envelope_draws,
+            max_visible_draws=n_draws,
+            random_seed=random_seed,
         )
 
         depth = out["depth"]
@@ -811,21 +836,19 @@ class IBIS_Strat2:
         fig, ax = plt.subplots(figsize=figsize)
 
         if show_draws:
-            draws = out["draws"]
-            n = min(int(n_draws), draws.shape[0])
-            idx = np.random.choice(draws.shape[0], size=n, replace=False)
+            draws = out["visible_draws"]
 
-            for j in idx:
+            for j in range(draws.shape[0]):
                 ax.plot(
                     draws[j],
                     depth,
                     color="0.65",
-                    lw=0.4,
-                    alpha=0.06,
+                    lw=0.35,
+                    alpha=0.05,
                     zorder=1,
+                    rasterized=True,
                 )
 
-        # 95% credible envelope
         ax.fill_betweenx(
             depth,
             out["q025"],
@@ -837,7 +860,6 @@ class IBIS_Strat2:
             zorder=2,
         )
 
-        # 68% credible envelope
         ax.fill_betweenx(
             depth,
             out["q16"],
@@ -849,7 +871,6 @@ class IBIS_Strat2:
             zorder=3,
         )
 
-        # Interquartile envelope
         ax.fill_betweenx(
             depth,
             out["q25"],
@@ -861,7 +882,6 @@ class IBIS_Strat2:
             zorder=4,
         )
 
-        # Median model
         ax.plot(
             out["q50"],
             depth,
@@ -871,10 +891,9 @@ class IBIS_Strat2:
             zorder=5,
         )
 
-        # Data
         xerr = np.vstack([
-            self.low_age_err * 2,
-            self.high_age_err * 2,
+            self.low_age_err * 2.0,
+            self.high_age_err * 2.0,
         ])
 
         ax.errorbar(
@@ -910,7 +929,39 @@ class IBIS_Strat2:
             handlelength=2.0,
         )
 
+
         fig.tight_layout()
 
         return fig, ax
+
+
+    def Get_HighRes_Dataframe(self,
+        n_plot=500,
+        smooth_sigma=15,
+        method="linear",
+                n_draws=75,
+                max_envelope_draws=1500,
+                random_seed=123,):
+    
+        out = self.Get_Smoothed_Age_Model_For_Plot(
+            n_plot=n_plot,
+            smooth_sigma=smooth_sigma,
+            method=method,
+            enforce_monotone=True,
+            max_envelope_draws=max_envelope_draws,
+            max_visible_draws=n_draws,
+            random_seed=random_seed,
+        )
+
+        df = pd.DataFrame()
+        df['Depth grid'] = out['depth']
+        df['Age median (posterior)'] = out['q50']
+        df['Age 68% credible evelope low'] = out['q16']
+        df['Age 68% credible evelope high'] = out['q84']
+        df['Age 95% credible evelope low'] = out['q025']
+        df['Age 95% credible evelope high'] = out['q975']
+        df['Age 50% credible evelope low'] = out['q25']
+        df['Age 50% credible evelope high'] = out['q75']
+        
+        return df
 
