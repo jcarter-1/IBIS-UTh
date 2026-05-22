@@ -766,7 +766,7 @@ class IBIS:
                                                self.n_chains, 
                                                iterations = self.MCMC_Strat_samples, 
                                                burn_in = int(self.MCMC_Strat_samples)/2, 
-                                                       resolution=100,
+                                                resolution=self.meta.get("resolution", 100),
                                                 top_age=self.meta.get("top_age", None),
                                                 top_age_err=self.meta.get("top_age_err", None),
                                                 top_age_depth=self.meta.get("top_age_depth", None),
