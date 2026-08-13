@@ -42,7 +42,7 @@ IBIS is a probabilisitc Bayesian model to infer unique sample-specific initial t
 
 ## Why does this matter?
 -----
-* Ultimately the precision and accuracy of the U—Th method is dependent on this correct.
+* Ultimately the precision and accuracy of the U—Th method is dependent on this correction.
 * Correction can bias ages dramatically, in particular for "dirtier" samples higher thorium content - low measured $^{230}$Th/$^{232}$Th activity ratios and also young samples with a lower "true" $^{230}$Th radiogenic budget.
 
 
