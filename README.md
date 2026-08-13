@@ -12,7 +12,7 @@ python 3.11 -m venv .venv
 source .venv/bin/activate
 
 (2) Install IBIS + jupyter kernel support
-pip install --upgrade pop
+pip install --upgrade pip
 pip install ibis-uth
 pip instal jupyterlab ipykernel
 
