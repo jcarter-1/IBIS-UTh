@@ -83,8 +83,13 @@ class ThoriumPrior:
 
         # enforce support
         pdf[(x < self.TH0_MIN) | (x > self.TH0_MAX)] = 0.0
+        
+        try:
+            self.trapezoid = np.trapezoid   # NumPy verison control help
+        except AttributeError:
+            self.trapezoid = np.trapz       # NumPy verison control help
 
-        area = np.trapz(pdf, x)
+        area = self.trapezoid(pdf, x)
         if not np.isfinite(area) or area <= 0:
             raise ValueError("Thorium prior pdf has zero or invalid area on the supplied grid.")
 
@@ -117,32 +122,45 @@ class ThoriumPrior:
         u = self.rng.random(n)
         out = np.asarray(self._thor_inv_cdf(u), float)
         return np.clip(out, self.TH0_MIN, self.TH0_MAX)
+        
+    def ppf(self, u):
+        """
+        Inverse CDF of the thorium prior.
+    
+        Used to transform a standard-normal latent variable
+        into a value distributed according to the thorium prior.
+        """
+        u = np.asarray(u, float)
+        u = np.clip(u, 1e-12, 1.0 - 1e-12)
+    
+        return np.asarray(
+            self._thor_inv_cdf(u), float)
 
 class IBIS_MCMC:
     """
-    IBIS MCMC for per-sample initial Th with strat constraints.
-
-    Speed-ups (math unchanged):
-      - Cache ln_prior as sum of per-index terms; O(1) update for single-index moves
-      - Cache strat likelihood sum over all pairs; O(N) update for single-index moves
-      - Keep full evaluation for block moves / multi-index changes
-
-    IMPORTANT:
-      - Cache rollback is handled safely (no stale rollback pack reuse).
+    IBIS MCMC sampler
+    ------------------
+    Sampler using a standardized latent parameterization
     """
 
     def __init__(self, Thor_KDE, Age_Maximum,
                  Age_Uncertainties, data, sample_name='SAMPLE_NAME',
-                 n_chains=3, iterations=50000, burn_in=10000,
-                 Start_from_pickles=True, method='thoth',
-                 save_dir = None, print_diagnostics = False):
+                 n_chains=3, iterations=20000, burn_in=5000,
+                 Start_from_pickles=False, method='thoth',
+                 save_dir=None, print_diagnostics=False,
+                 proposal_scale=0.25,
+                 store_thin=5,
+                 seed=12345):
 
         self.method = method
         self.data = data
         self.burn_in = int(burn_in)
         self.Age_Maximum = float(Age_Maximum)
         self.Thor_KDE = Thor_KDE
-        self.rng = np.random.default_rng()
+        self.seed = int(seed)
+        self.rng = np.random.default_rng(self.seed)
+        self.proposal_scale = float(proposal_scale)
+        self.store_thin = int(store_thin)
         # depths + order (shallow->deep)
         self.depths = np.asarray(self.data['Depths'].values, float)
         self._depth_order = np.argsort(self.depths)
@@ -194,32 +212,6 @@ class IBIS_MCMC:
             rng= self.rng,
         )
     
-        def _safe_log_step(val, err, floor=1e-8):
-            val = max(float(val), 1e-12)
-            err = max(float(err), floor)
-            rel = err / val
-            return float(np.sqrt(np.log(1.0 + rel**2)))
-        
-        # --- move probabilities ---
-        self.p_block  = 0.65
-        self.p_single = 0.35
-        
-        # --- block tuning: one scale per sample index ---
-        self.tuning_block = {}
-        for i in range(self.N_meas):
-            self.tuning_block[f'Block_{i}'] = 0.10
-        
-        # --- single-parameter tuning: one scale per parameter per index ---
-        self.tuning_single = {}
-        for i in range(self.N_meas):
-            self.tuning_single[f'Initial_Thorium_{i}']   = 0.10
-            self.tuning_single[f'U234_U238_ratios_{i}']  = _safe_log_step(self.r48[i], self.r48_err[i])
-            self.tuning_single[f'Th230_U238_ratios_{i}'] = _safe_log_step(self.r08[i], self.r08_err[i])
-            self.tuning_single[f'Th232_U238_ratios_{i}'] = _safe_log_step(self.r28[i], self.r28_err[i])
-        
-        self.block_keys  = list(self.tuning_block.keys())
-        self.single_keys = list(self.tuning_single.keys())
-        self.keys = self.block_keys + self.single_keys
     
         # Pairings
         N = self.N_meas
@@ -246,22 +238,7 @@ class IBIS_MCMC:
         self._adj_sigma = np.hypot(errs[self._adj_I], errs[self._adj_J])
         
         # storage
-        self.store_thin = 5
         self.store_dtype = np.float32
-        
-        # moves
-        self._move_funcs = [
-            ("PerSampleBlock", self.PerSampleBlock_Move),
-        ]
-
-        # caches
-        self._ages_cache = None
-        self._lp_u = None
-        self._lp_k = None
-        self._lp_r = None
-        self._lp_prior_total = None
-        self._ll_strat_total = None
-
         
     # ---------------- bounds helper ----------------
     def compute_TH0_MAX(self, r08, r08e, r28, r28e, k=3.0, eps=1e-12, l230=9.17055e-06):
@@ -426,57 +403,69 @@ class IBIS_MCMC:
                                              a0=guess[i], amax=amax)
         return ages
 
+    # ============================================================
+    # LATENT Z PARAMETERIZATION
+    # ============================================================
 
-    def ln_prior_ratios(self, U234, Th230, Th232):
-        if np.any(U234 <= 0) or np.any(Th230 <= 0) or np.any(Th232 <= 0):
+    def z_to_theta(self, z):
+        """
+        Convert standardized latent parameters into physical
+        U-series parameters.
+
+        Columns of z are:
+
+            0 = initial 230Th/232Th
+            1 = measured 234U/238U
+            2 = measured 230Th/238U
+            3 = measured 232Th/238U
+        """
+
+        z = np.asarray(z, float)
+
+        if z.shape != (self.N_meas, 4):
+            raise ValueError(
+                f"z must have shape ({self.N_meas}, 4), "
+                f"got {z.shape}"
+            )
+
+        if np.any(~np.isfinite(z)):
+            return None
+
+        u = norm.cdf(z[:, 0])
+        # Initial thorium
+        Th_initial = self.thorium_prior.ppf(u)
+        # --------------------------------------------------------
+        # Analytical activity ratios
+        # ------------------
+        U234 = (self.r48+ self.r48_err * z[:, 1])
+
+        Th230 = (self.r08 + self.r08_err * z[:, 2])
+
+        Th232 = (self.r28 + self.r28_err * z[:, 3])
+
+        # physical ratios must remain positive
+        if (
+            np.any(U234 <= 0.0)
+            or np.any(Th230 <= 0.0)
+            or np.any(Th232 <= 0.0)
+        ):
+            return None
+
+        return (Th_initial,  U234,    Th230,     Th232  )
+
+    def ln_prior_z(self, z):
+        """
+        Standard-normal prior for every latent parameter.
+        """
+
+        z = np.asarray(z, float)
+
+        if np.any(~np.isfinite(z)):
             return -np.inf
-        s48 = np.clip(self.r48_err, 1e-12, np.inf)
-        s08 = np.clip(self.r08_err, 1e-12, np.inf)
-        s28 = np.clip(self.r28_err, 1e-12, np.inf)
-        lp = 0.0
-        lp += np.sum(_norm_logpdf_vector(U234, self.r48, s48))
-        lp += np.sum(_norm_logpdf_vector(Th230, self.r08, s08))
-        lp += np.sum(_norm_logpdf_vector(Th232, self.r28, s28))
-        return float(lp)
 
-    def _theta_is_finite_positive(self, theta):
-        if theta is None or (not isinstance(theta, (tuple, list))) or len(theta) != 4:
-            return False
-        th, U234, Th230, Th232 = theta
-        th   = np.asarray(th, float)
-        U234 = np.asarray(U234, float)
-        Th230= np.asarray(Th230, float)
-        Th232= np.asarray(Th232, float)
-
-        if (th.shape[0] != self.N_meas or U234.shape[0] != self.N_meas or
-            Th230.shape[0] != self.N_meas or Th232.shape[0] != self.N_meas):
-            return False
-
-        if (np.any(~np.isfinite(th)) or np.any(~np.isfinite(U234)) or
-            np.any(~np.isfinite(Th230)) or np.any(~np.isfinite(Th232))):
-            return False
-
-        if (np.any(th <= 0) or np.any(U234 <= 0) or np.any(Th230 <= 0) or np.any(Th232 <= 0)):
-            return False
-
-        return True
-
-    def ln_prior(self, theta):
-        if not self._theta_is_finite_positive(theta):
-            return -np.inf
-
-        th, U234, Th230, Th232 = theta
-        th = np.asarray(th, float)
-        U234 = np.asarray(U234, float)
-        Th230 = np.asarray(Th230, float)
-        Th232 = np.asarray(Th232, float)
-
-        lp = 0.0
-        # Total prior is the combination of the
-        # measured ratios and initial ratio
-        lp += float(np.sum(self.thorium_prior.thor_logpdf(th)))
-        lp += float(self.ln_prior_ratios(U234, Th230, Th232))
-        return lp if np.isfinite(lp) else -np.inf
+        return -0.5 * float(
+            np.sum(z**2)
+        )
 
     # ---------------- likelihood pieces ----------------
     def strat_likelihood(self, ages):
@@ -513,275 +502,279 @@ class IBIS_MCMC:
         eps = float(frac) * float(self.Age_Maximum)
         return np.asarray(ages, float) >= (float(self.Age_Maximum) - eps)
 
-    # ---------------- full posterior evaluators ----------------
-    def log_posterior(self, theta, ages_prev=None):
-        if not self._theta_is_finite_positive(theta):
-            return -np.inf, np.full(self.N_meas, np.nan)
 
-        lp = self.ln_prior(theta)
+    # Posterior
+    def log_posterior_z(
+        self,
+        z,
+        ages_prev=None,
+        changed_idx=None,
+    ):
+        """
+        Posterior evaluated in standardized latent coordinates.
+
+        If changed_idx is None:
+            solve all U-series ages.
+
+        If changed_idx is supplied:
+            assume only that horizon changed and solve only
+            its U-series age. All other ages are copied from
+            ages_prev.
+        """
+        # ========================================================
+        # PRIOR IN z-SPACE
+        # ========================================================
+        lp = self.ln_prior_z(z)
         if not np.isfinite(lp):
-            return -np.inf, np.full(self.N_meas, np.nan)
+            return ( -np.inf, np.full(self.N_meas, np.nan))
+        # ========================================================
+        # CONVERT z -> PHYSICAL PARAMETERS
+        # ========================================================
 
-        th, U234, Th230, Th232 = theta
+        theta = self.z_to_theta(z)
+        if theta is None:
+            return (-np.inf, np.full(self.N_meas, np.nan))
+
+        (Th_initial,  U234,  Th230,  Th232) = theta
+
+        # ========================================================
+        # SOLVE U-SERIES AGES
+        # ========================================================
         try:
-            ages = self.ages_vector(th, U234, Th230, Th232, age_guess=ages_prev)
-        except RuntimeError:
-            # no root / solver failure => impossible state
-            return -np.inf, np.full(self.N_meas, np.nan)
-        lp += self.age_max_penalty(ages, w=1e5, power=2)
 
-        if (np.any(~np.isfinite(ages)) or np.any(ages < 0)):
+            # ----------------------------------------------------
+            # FULL SOLVE
+            # ----------------------------------------------------
+            if changed_idx is None:
+                ages = self.ages_vector(Th_initial, U234, Th230, Th232, age_guess=ages_prev)
+
+            # ----------------------------------------------------
+            # LOCAL SOLVE
+            # ONE HORIZON!!
+            else:
+                if ages_prev is None:
+                    raise ValueError(
+                        "ages_prev must be supplied "
+                        "when changed_idx is used."
+                    )
+                ages = np.asarray(ages_prev,float).copy()
+
+                if ages.shape != (self.N_meas,):
+                    raise ValueError(
+                        f"ages_prev must have shape "
+                        f"({self.N_meas},)"
+                    )
+
+                idx = int(changed_idx)
+
+                if not (0 <= idx < self.N_meas ):
+                    raise IndexError(f"changed_idx={idx} is invalid")
+
+                ages[idx] = self._solve_age_single(
+                    Th_initial=Th_initial[idx],
+                    Th232=Th232[idx],
+                    U234=U234[idx],
+                    Th230=Th230[idx],
+                    # Current age is an excellent starting guess
+                    a0=ages_prev[idx],
+                    amax=self.Age_Solve_Max,
+                )
+
+        except Exception:
+
+            return ( -np.inf, np.full(self.N_meas, np.nan))
+
+        # ========================================================
+        # CHECK AGES
+        # ========================================================
+
+        if (np.any(~np.isfinite(ages))  or np.any(ages < 0.0)):
             return -np.inf, ages
 
-        if not self._hard_strat_check_adj(ages, dt_min=None):
-            lp += self.strat_hinge_penalty_adj(ages, k=50)
+        # ========================================================
+        # AGE MAXIMUM PENALTY
+        # ========================================================
 
-        ll = float(self.strat_likelihood(ages))
+        lp += self.age_max_penalty(ages,w=1e5,power=2)
+
+        # ========================================================
+        # STRATIGRAPHIC INVERSION PENALTY
+        # ========================================================
+
+        if not self._hard_strat_check_adj(
+            ages,
+            dt_min=None,
+        ):
+
+            lp += self.strat_hinge_penalty_adj( ages, k=50)
+
+        # ========================================================
+        # STRATIGRAPHIC LIKELIHOOD
+        # ========================================================
+        ll = self.strat_likelihood(ages)
         if not np.isfinite(ll):
             return -np.inf, ages
 
-        sat = self._age_is_saturated(ages, frac=1e-7)
+        # ========================================================
+        # AGE SATURATION PENALTY
+        # ========================================================
+        sat = self._age_is_saturated(
+            ages,
+            frac=1e-7,
+        )
+
         if np.any(sat):
-            lp += -10.0 * float(np.sum(sat))
+            lp -= (
+                10.0
+                * float(np.sum(sat))
+            )
 
         return float(lp + ll), ages
 
-  # ---------------- proposal helpers ----------------
-    def _draw_positive_normal(self, mu, sigma, max_tries=50):
-        mu = np.asarray(mu, float)
-        sigma = np.asarray(sigma, float)
-        x = self.rng.normal(mu, sigma)
-        bad = x <= 0
-        tries = 0
-        while np.any(bad) and tries < max_tries:
-            x[bad] = self.rng.normal(mu[bad], sigma[bad])
-            bad = x <= 0
-            tries += 1
-        x = np.where(x <= 0, 1e-12, x)
-        return x
 
-    def Initial_Guesses_for_Model(self, max_attempts=20000, verbose=True):
-        initial_thetas = []
+    # ============================================================
+    # INITIALIZE THETA
+    # ============================================================
 
-        # USE DEPTH-SORTED MEANS + ERRORS (critical)
-        Th230_c = self.r08
-        Th232_c = self.r28
-        U234_c  = self.r48
-        Th230_s = self.r08_err
-        Th232_s = self.r28_err
-        U234_s  = self.r48_err
+    def Initial_Guess_z(self,rng, max_attempts=5000):
+        """
+        Generate a valid starting state in standardized z-space.
+        """
+        age_guess = (np.linspace(0.05,0.95,self.N_meas) * self.Age_Maximum)
 
-        # monotone age guess by depth to help Newton
-        age_guess = np.linspace(0.05, 0.95, self.N_meas) * float(self.Age_Maximum)
-        found = np.zeros(self.n_chains, dtype=bool)
+        # First try the exact centre of all priors
+        z = np.zeros((self.N_meas, 4),dtype=float,)
 
-        for chain in range(self.n_chains):
-            for _ in range(int(max_attempts)):
-                Th_initial = self.thorium_prior.rvs(self.N_meas)
-                Th_initial = np.clip(Th_initial, self.TH0_MIN, self.TH0_MAX)
+        logp, ages = self.log_posterior_z(z, ages_prev=age_guess)
 
-                Th230_in = self._draw_positive_normal(Th230_c, Th230_s)
-                Th232_in = self._draw_positive_normal(Th232_c, Th232_s)
-                U234_in  = self._draw_positive_normal(U234_c,  U234_s)
+        if ( np.isfinite(logp) and np.all(np.isfinite(ages))):
+            # give each chain a small independent perturbation
+            for _ in range(100):
+                z_try = ( z
+                    + rng.normal( 0.0,  0.10, size=z.shape,
+                    )     )
 
-                theta = (Th_initial, U234_in, Th230_in, Th232_in)
-                logp, ages = self.log_posterior(theta, ages_prev=age_guess)
+                logp_try, ages_try = (self.log_posterior_z( z_try, ages_prev=ages))
 
-                if np.isfinite(logp) and np.isfinite(ages).all():
-                    initial_thetas.append(theta)
-                    found[chain] = True
-                    break
-            if (not found[chain]) and verbose:
-                print(f"Chain {chain} failed after {max_attempts} attempts")
-        if not np.all(found):
-            bad = np.where(~found)[0].tolist()
-            raise RuntimeError(
-                f"No valid starting θ found for chains {bad}. "
-                f"Likely: Age_Maximum too tight / Th0 bounds too restrictive / "
-                f"data imply no root for some points."
+                if (  np.isfinite(logp_try)
+                    and np.all(np.isfinite(ages_try))
+                    ):
+                    return z_try
+
+            return z
+        # --------------------------------------------------------
+        # If z=0 doesn't work, search around the centre
+        # --------------------------------------------------------
+        for _ in range(int(max_attempts)):
+
+            z = rng.normal( 0.0,   0.50,
+                size=(self.N_meas, 4),
             )
-        return initial_thetas, found
 
-    # ---------------- moves ----------------
-    def PerSampleBlock_Move(self, theta, index):
-        th_cur, U234_cur, Th230_cur, Th232_cur = theta
-    
-        s_block = float(self.tuning_block.get(f'Block_{index}', 0.10))
-    
-        # relative weights inside the block
-        w_th   = 1.00
-        w_u234 = 0.60
-        w_t30  = 0.60
-        w_t32  = 0.60
-    
-        th_new    = th_cur.copy()
-        U234_new  = U234_cur.copy()
-        Th230_new = Th230_cur.copy()
-        Th232_new = Th232_cur.copy()
-    
-        th_new[index]    = np.exp(np.log(max(th_cur[index],    1e-12)) + self.rng.normal(0.0, w_th   * s_block))
-        U234_new[index]  = np.exp(np.log(max(U234_cur[index],  1e-12)) + self.rng.normal(0.0, w_u234 * s_block))
-        Th230_new[index] = np.exp(np.log(max(Th230_cur[index], 1e-12)) + self.rng.normal(0.0, w_t30  * s_block))
-        Th232_new[index] = np.exp(np.log(max(Th232_cur[index], 1e-12)) + self.rng.normal(0.0, w_t32  * s_block))
-    
-        th_new[index] = float(np.clip(th_new[index], self.TH0_MIN, self.TH0_MAX))
-    
-        return (th_new, U234_new, Th230_new, Th232_new)
+            logp, ages = self.log_posterior_z(  z,
+                ages_prev=age_guess)
 
-    def SingleParameter_Move(self, theta, index, param_name=None):
-        th_cur, U234_cur, Th230_cur, Th232_cur = theta
-    
-        if param_name is None:
-            param_name = self.rng.choice([
-                'Initial_Thorium',
-                'U234_U238_ratios',
-                'Th230_U238_ratios',
-                'Th232_U238_ratios',
-            ])
-    
-        th_new    = th_cur.copy()
-        U234_new  = U234_cur.copy()
-        Th230_new = Th230_cur.copy()
-        Th232_new = Th232_cur.copy()
-    
-        key = f'{param_name}_{index}'
-        s = float(self.tuning_single.get(key, 0.05))
-    
-        if param_name == 'Initial_Thorium':
-            th_new[index] = np.exp(np.log(max(th_cur[index], 1e-12)) + self.rng.normal(0.0, s))
-            th_new[index] = float(np.clip(th_new[index], self.TH0_MIN, self.TH0_MAX))
-    
-        elif param_name == 'U234_U238_ratios':
-            U234_new[index] = np.exp(np.log(max(U234_cur[index], 1e-12)) + self.rng.normal(0.0, s))
-    
-        elif param_name == 'Th230_U238_ratios':
-            Th230_new[index] = np.exp(np.log(max(Th230_cur[index], 1e-12)) + self.rng.normal(0.0, s))
-    
-        elif param_name == 'Th232_U238_ratios':
-            Th232_new[index] = np.exp(np.log(max(Th232_cur[index], 1e-12)) + self.rng.normal(0.0, s))
-    
-        else:
-            raise ValueError(f"Unknown parameter name: {param_name}")
-    
-        return (th_new, U234_new, Th230_new, Th232_new), key
+            if (np.isfinite(logp)
+                and np.all(np.isfinite(ages))
+            ):
+                return z
 
-
-    # ---------------- Propose State -----------------
-    def propose_state(self, theta, index):
-        r = self.rng.random()
-    
-        if r < self.p_block:
-            theta_prop = self.PerSampleBlock_Move(theta, index)
-            move_type = "block"
-            moved_keys = [f'Block_{index}']
-            return theta_prop, move_type, moved_keys
-    
-        else:
-            theta_prop, single_key = self.SingleParameter_Move(theta, index)
-            move_type = "single"
-            moved_keys = [single_key]
-            return theta_prop, move_type, moved_keys
-    
-
-    # ---------------- tuning adaptation ----------------
-    def adapt_one(self, key, rate, t, target=0.25, smin=1e-5, smax=1.0):
-        eta = 1.0 / np.sqrt(max(1, t))
-    
-        if key in self.tuning_block:
-            log_s = np.log(max(float(self.tuning_block[key]), 1e-12))
-            log_s += eta * (rate - target)
-            self.tuning_block[key] = float(np.clip(np.exp(log_s), smin, smax))
-    
-        elif key in self.tuning_single:
-            log_s = np.log(max(float(self.tuning_single[key]), 1e-12))
-            log_s += eta * (rate - target)
-            self.tuning_single[key] = float(np.clip(np.exp(log_s), smin, smax))
-    
-        else:
-            raise KeyError(f"Unknown tuning key: {key}")
+        raise RuntimeError(
+            "Could not find a valid starting state in z-space."
+        )
+    # ============================================================
+    # MCMC PROPOSAL IN z-space
+    # ============================================================
+    def propose_sample(self, z, index, rng, proposal_scale):
+        """
+        Move all four latent parameters for one sample together.
+        """
+        z_prop = z.copy()
+        z_prop[index, :] += rng.normal(
+            0.0,
+            proposal_scale,
+            size=4,
+        )
+        return z_prop
 
     # ---------------- I/O ----------------
-    def Save_Parameters_and_Tuning(self, theta, chain_id):
-        tf_file = self.save_dir / f'tuning_{self.sample_name}_{chain_id}.pkl'
-        theta_file = self.save_dir / f'{self.sample_name}_theta_{chain_id}.pkl'
-    
-        with open(theta_file, 'wb') as f:
-            pickle.dump(theta, f)
-    
-        tuning_payload = {
-            "tuning_block": self.tuning_block,
-            "tuning_single": self.tuning_single,
-        }
-        with open(tf_file, 'wb') as f:
-            pickle.dump(tuning_payload, f)
+    def Save_State(self, z, chain_id,
+    ):
+        """
+        Save final latent state for optional restart.
+        """
+        output_file = (
+            self.save_dir
+            / f"{self.sample_name}_z_{chain_id}.pkl")
+
+        with open(output_file, "wb") as f:
+            pickle.dump(z, f)
     
     # ===================== MAIN MCMC FUNCTION =====================
-    def MCMC(self, theta, iterations, chain_id):
+    def MCMC(self, z, iterations, chain_id, seed):
+        """
+        Simple random-scan Metropolis sampler in standardized z-space.
+
+        One iteration = one proposal for one randomly selected horizon.
+        All four latent parameters for that horizon are moved together.
+        """
+
         start_time = time.time()
+
+        rng = np.random.default_rng(seed)
+
         Ndata = self.N_meas
-        total_iterations = int(iterations) + int(self.burn_in)
 
-        # load per-chain tuning
-        tf_file = self.save_dir / f'tuning_{self.sample_name}_{chain_id}.pkl'
-        if tf_file.exists() and self.Start_from_pickles:
-            with open(tf_file, 'rb') as f:
-                payload = pickle.load(f)
-        
-            if isinstance(payload, dict) and ("tuning_block" in payload) and ("tuning_single" in payload):
-                self.tuning_block = payload["tuning_block"]
-                self.tuning_single = payload["tuning_single"]
-            else:
-                # backward compatibility with old tuning pickle
-                pass
+        total_iterations = (int(self.burn_in) + int(iterations))
 
-        # counters
-        all_keys = self.block_keys + self.single_keys
-        self.proposal_counts = {k: 0 for k in all_keys}
-        self.accept_counts   = {k: 0 for k in all_keys}
-        
-        self._last_prop_counts = {k: 0 for k in all_keys}
-        self._last_acc_counts  = {k: 0 for k in all_keys}
+        # Each chain gets its own copy of the starting scale
+        proposal_scale = float(self.proposal_scale)
 
-        self.diag = {
-            "accepted": 0,
-            "invalid_theta": 0,
-            "age_nan": 0,
-            "lp_nan": 0,
-            "mh_reject": 0,
-        }
+        # ========================================================
+        # INITIALS
+        # ========================================================
+        init_ages_guess = (np.linspace(0.05, 0.95, Ndata)* self.Age_Maximum)
 
-        self.rej_by_index = defaultdict(lambda: {
-            "accepted": 0,
-            "invalid_theta": 0,
-            "age_nan": 0,
-            "lp_nan": 0,
-            "mh_reject": 0,
-        })
+        logp_cur, ages_cur = ( self.log_posterior_z( z, ages_prev=init_ages_guess))
 
-        if not hasattr(self, "_adapt_step"):
-            self._adapt_step = 0
+        if ( not np.isfinite(logp_cur) or np.any(~np.isfinite(ages_cur))):
+            raise RuntimeError( f"Invalid starting state "
+                                f"for chain {chain_id}"
+                                )
+        # ========================================================
+        # STORAGE
+        # ========================================================
+        keep = ( int(iterations) + self.store_thin - 1) // self.store_thin
 
-        # initial eval
-        init_ages_guess = np.linspace(0.05, 0.95, Ndata) * float(self.Age_Maximum)
-        logp_cur, ages_cur = self.log_posterior(theta, ages_prev=init_ages_guess)
+        Ages_store = np.zeros( (keep, Ndata), dtype=self.store_dtype,)
 
-        if (not np.isfinite(logp_cur)) or np.any(~np.isfinite(ages_cur)):
-            raise RuntimeError(
-                f"Initial theta produced non-finite posterior/ages for chain {chain_id}. "
-                f"logp={logp_cur}, finite_ages={np.isfinite(ages_cur).all()}"
-            )
+        Initial_Th_mean_store = np.zeros( (keep, Ndata), dtype=self.store_dtype,)
 
-        # storage
-        keep = iterations // self.store_thin + int(iterations % self.store_thin != 0)
-        Ages_store            = np.zeros((keep, Ndata), dtype=self.store_dtype)
-        Initial_Th_mean_store = np.zeros((keep, Ndata), dtype=self.store_dtype)
-        U234_initial_store    = np.zeros((keep, Ndata), dtype=self.store_dtype)
-        U234_ratios_store     = np.zeros((keep, Ndata), dtype=self.store_dtype)
-        Th232_ratios_store    = np.zeros((keep, Ndata), dtype=self.store_dtype)
-        Th230_ratios_store    = np.zeros((keep, Ndata), dtype=self.store_dtype)
-        posterior_store       = np.zeros(keep, dtype=self.store_dtype)
+        U234_initial_store = np.zeros( (keep, Ndata), dtype=self.store_dtype,)
+
+        U234_ratios_store = np.zeros( (keep, Ndata), dtype=self.store_dtype,)
+
+        Th232_ratios_store = np.zeros( (keep, Ndata), dtype=self.store_dtype,)
+
+        Th230_ratios_store = np.zeros( (keep, Ndata), dtype=self.store_dtype,)
+
+        posterior_store = np.zeros(keep, dtype=self.store_dtype)
 
         sample_index = 0
+        # ========================================================
+        # ADAPTATION COUNTERS
+        # ========================================================
+        window_proposed = 0
+        window_accepted = 0
+        total_proposed = 0
+        total_accepted = 0
+
+        # Tune every 2000 proposals during burn-in
+        adapt_interval = 2000
+
+        # ========================================================
+        # PROGRESS BAR
+        # ========================================================
 
         pbar = tqdm(
             range(1, total_iterations + 1),
@@ -792,154 +785,134 @@ class IBIS_MCMC:
             disable=(chain_id != 0),
         )
 
-        def _register(idx, outcome):
-            self.diag[outcome] += 1
-            self.rej_by_index[idx][outcome] += 1
-            
-        def _adapt_window(target=0.30, min_props_block=20, min_props_single=3):
-            self._adapt_step += 1
-            t = self._adapt_step
-        
-            for key in self.block_keys:
-                p_tot = self.proposal_counts.get(key, 0)
-                a_tot = self.accept_counts.get(key, 0)
-                p_last = self._last_prop_counts.get(key, 0)
-                a_last = self._last_acc_counts.get(key, 0)
-        
-                dp = p_tot - p_last
-                da = a_tot - a_last
-        
-                if dp >= min_props_block:
-                    rate = da / dp
-                    self.adapt_one(key, rate, t, target=target, smin=1e-5, smax=1.0)
-        
-                self._last_prop_counts[key] = p_tot
-                self._last_acc_counts[key]  = a_tot
-        
-            for key in self.single_keys:
-                p_tot = self.proposal_counts.get(key, 0)
-                a_tot = self.accept_counts.get(key, 0)
-                p_last = self._last_prop_counts.get(key, 0)
-                a_last = self._last_acc_counts.get(key, 0)
-        
-                dp = p_tot - p_last
-                da = a_tot - a_last
-        
-                if dp >= min_props_single:
-                    rate = da / dp
-                    self.adapt_one(key, rate, t, target=target, smin=1e-5, smax=1.0)
-        
-                self._last_prop_counts[key] = p_tot
-                self._last_acc_counts[key]  = a_tot
-
-        def _print_diag(i):
-            props = sum(self.proposal_counts.values()) or 1
-            accs  = sum(self.accept_counts.values())
-            acc_rate = accs / props
-
-            ii, jj, dA, zz = self._worst_adj_violation(ages_cur)
-            worst = "none" if ii is None else f"i={ii}, j={jj}, Δ={dA:.6g}, z={zz:.6g}"
-            sat_frac = float(np.mean(self._age_is_saturated(ages_cur, frac=1e-7)))
-
-            print(
-                f"\n================ MCMC diagnostics @ iter {i} ================\n"
-                f"overall acc          : {acc_rate:.3f}\n"
-                f"accepted             : {self.diag['accepted']}\n"
-                f"invalid_theta        : {self.diag['invalid_theta']}\n"
-                f"age_nan              : {self.diag['age_nan']}\n"
-                f"lp_nan               : {self.diag['lp_nan']}\n"
-                f"mh_reject            : {self.diag['mh_reject']}\n"
-                f"sat_frac             : {sat_frac:.3f}\n"
-                f"worst_adj_violation  : {worst}\n"
-            )
-
-            print("\n--- block tuning snapshot ---")
-            vals = list(self.tuning_block.values())
-            if vals:
-                print(
-                    f"Block scales           median={np.median(vals):.4g}  "
-                    f"min={np.min(vals):.4g}  max={np.max(vals):.4g}"
-                )
-            
-            print("\n--- single-move tuning snapshot ---")
-            for prefix in ["Initial_Thorium_", "U234_U238_ratios_", "Th230_U238_ratios_", "Th232_U238_ratios_"]:
-                vals = [v for k, v in self.tuning_single.items() if k.startswith(prefix)]
-                if vals:
-                    print(
-                        f"{prefix:20s} median={np.median(vals):.4g}  "
-                        f"min={np.min(vals):.4g}  max={np.max(vals):.4g}"
-                    )
-
-            print("\n--- worst indices (top 8) ---")
-            scored = []
-            for idx, d in self.rej_by_index.items():
-                total = sum(d.values())
-                fail = d["invalid_theta"] + d["age_nan"] + d["lp_nan"] + d["mh_reject"]
-                scored.append((idx, total, fail, d["accepted"]))
-            scored.sort(key=lambda x: x[2], reverse=True)
-
-            for idx, total, fail, acc in scored[:8]:
-                print(f"idx={idx:3d}  total={total:6d}  fail={fail:6d}  acc={acc:6d}")
+        # ========================================================
+        # MCMC
+        # ========================================================
 
         for i in pbar:
-            idx = int(self.rng.integers(0, Ndata))
-            
-            theta_prop, move_type, moved_keys = self.propose_state(theta, idx)
-            
-            for key in moved_keys:
-                self.proposal_counts[key] += 1
-            
-            logp_prop, ages_prop = self.log_posterior(theta_prop, ages_prev=ages_cur)
+            # ----------------------------------------------------
+            # RANDOMLY SELECT HORIZON
+            # ----------------------------------------------------
 
-            if not self._theta_is_finite_positive(theta_prop):
-                _register(idx, "invalid_theta")
-                accept = False
-            elif np.any(~np.isfinite(ages_prop)):
-                _register(idx, "age_nan")
-                accept = False
-            elif not np.isfinite(logp_prop):
-                _register(idx, "lp_nan")
-                accept = False
-            else:
-                accept = (np.log(self.rng.random()) < (logp_prop - logp_cur))
-                if accept:
-                    theta = theta_prop
+            idx = int(rng.integers(0,Ndata))
+
+            # ----------------------------------------------------
+            # MOVE ALL FOUR z PARAMETERS FOR THAT HORIZON
+            # ----------------------------------------------------
+
+            z_prop = self.propose_sample(z,idx,rng,proposal_scale)
+
+            # ----------------------------------------------------
+            # EVALUATE PROPOSED STATE
+            # ----------------------------------------------------
+
+            logp_prop, ages_prop = (self.log_posterior_z(z_prop, ages_prev=ages_cur,
+                                   changed_idx = idx))
+
+            window_proposed += 1
+            total_proposed += 1
+            # ----------------------------------------------------
+            # METROPOLIS ACCEPT / REJECT
+            # ----------------------------------------------------
+            if np.isfinite(logp_prop):
+
+                log_alpha = ( logp_prop - logp_cur)
+
+                if (np.log(rng.random())  < log_alpha):
+
+                    z = z_prop
+
                     logp_cur = float(logp_prop)
+
                     ages_cur = np.asarray(ages_prop, float)
-                
-                    for key in moved_keys:
-                        self.accept_counts[key] += 1
-                
-                    _register(idx, "accepted")
-                else:
-                    _register(idx, "mh_reject")
 
-            if i > self.burn_in and ((i - self.burn_in) % self.store_thin == 0):
+                    window_accepted += 1
+                    total_accepted += 1
+            # ====================================================
+            # ADAPT ONLY DURING BURN-IN
+            # ====================================================
+
+            if (i <= self.burn_in and i % adapt_interval == 0 ):
+
+                rate = ( window_accepted / max(window_proposed,  1))
+
+                # Acceptance too low:
+                # make proposals smaller
+                if rate < 0.20:
+                    proposal_scale *= 0.90
+                # Acceptance too high:
+                # make proposals larger
+                elif rate > 0.40:
+                    proposal_scale *= 1.10
+                proposal_scale = float(
+                    np.clip( proposal_scale, 0.01, 2.0))
+
+                if ( chain_id == 0  and self.print_diagnostics):
+                    print(f"\nBurn-in iteration {i}: "
+                        f"acceptance={rate:.3f}, "
+                        f"proposal_scale={proposal_scale:.3f}"
+                            )
+
+                window_proposed = 0
+                window_accepted = 0
+            # ====================================================
+            # STORE AFTER BURN-IN
+            # ====================================================
+
+            if ( i > self.burn_in and ((i - self.burn_in - 1)  % self.store_thin == 0)):
+
                 if sample_index < keep:
-                    Ages_store[sample_index, :]            = ages_cur
-                    Initial_Th_mean_store[sample_index, :] = theta[0]
-                    U234_ratios_store[sample_index, :]     = theta[1]
-                    Th232_ratios_store[sample_index, :]    = theta[3]
-                    Th230_ratios_store[sample_index, :]    = theta[2]
-                    posterior_store[sample_index]          = logp_cur
-                    U234_initial_store[sample_index, :]    = 1.0 + ((theta[1] - 1.0) * np.exp(self.U234_lam * ages_cur))
+                    theta = self.z_to_theta(z)
+                    (Th_initial, U234, Th230, Th232 ) = theta
+
+                    Ages_store[sample_index, :] = ages_cur
+
+                    Initial_Th_mean_store[sample_index, :] = Th_initial
+
+                    U234_ratios_store[sample_index, :] = U234
+
+                    Th230_ratios_store[sample_index, :] = Th230
+
+                    Th232_ratios_store[sample_index, :] = Th232
+
+                    posterior_store[sample_index] = logp_cur
+
+                    U234_initial_store[sample_index, :] = (1.0 + ( U234- 1.0) * np.exp( self.U234_lam  * ages_cur ))
+
                     sample_index += 1
+            # ----------------------------------------------------
+            # Progress information
+            # ----------------------------------------------------
+            if ( chain_id == 0 and self.print_diagnostics and i % 5000 == 0
+            ):
+                overall_rate = ( total_accepted / max(total_proposed, 1))
 
-            
-            
-            if chain_id == 0 and i > 0 and i % 5000 == 0 and self.print_diagnostics:
-                _print_diag(i)
+                print(
+                    f"\nIteration {i}: "
+                    f"overall acceptance="
+                    f"{overall_rate:.3f}, "
+                    f"scale={proposal_scale:.3f}"
+                    )
 
-            if i > 50 and i % 1000 == 0:
-                self.Save_Parameters_and_Tuning(theta, chain_id)
+        # ========================================================
+        # SAVE FINAL STATE
+        # ========================================================
+        self.Save_State(z, chain_id)
 
-            if i > 50 and (i % 2000 == 0) and (i < self.burn_in):
-                _adapt_window(target=0.30, min_props_block=20, min_props_single=3)
+        elapsed = ( time.time() - start_time)
 
-        elapsed = time.time() - start_time
         if chain_id == 0:
-            print(f"\nChain {chain_id} finished in {elapsed/60:.2f} min. Stored {sample_index} samples.\n")
-
+            acceptance = ( total_accepted / max( total_proposed, 1))
+            print(
+                f"\nChain {chain_id} finished "
+                f"in {elapsed / 60:.2f} min\n"
+                f"Final proposal scale: "
+                f"{proposal_scale:.3f}\n"
+                f"Overall acceptance: "
+                f"{acceptance:.3f}\n"
+                f"Stored samples: "
+                f"{sample_index}\n"
+            )
         return (
             Ages_store,
             Initial_Th_mean_store,
@@ -948,47 +921,86 @@ class IBIS_MCMC:
             Th230_ratios_store,
             posterior_store,
             U234_initial_store,
-                )
+        )
 
     # ---------------- init/run helpers ----------------
-    def check_starting_parameters(self):
+    def check_starting_parameters(self, init_seeds):
+        """
+        Load new z-space checkpoints if available,
+        otherwise generate new starting states.
+        """
         if self.Start_from_pickles:
             loaded = []
             for chain_id in range(self.n_chains):
-                full_path = self.save_dir / f'{self.sample_name}_theta_{chain_id}.pkl'
-                if full_path.exists():
-                    with open(full_path, "rb") as f:
-                        loaded.append(pickle.load(f))
-                else:
-                    break
-            if len(loaded) == self.n_chains:
-                print("Loaded starting θ from pickles")
-                return loaded
 
-        print("Generating new starting θ’s")
-        thetas, found = self.Initial_Guesses_for_Model()
-        if not np.all(found):
-            bad = np.where(~found)[0].tolist()
-            raise RuntimeError(
-                f"No valid starting θ found for chains {bad}. "
-                f"Try increasing max_attempts, relaxing priors/bounds, or reducing Age_Maximum."
+                path = (self.save_dir / f"{self.sample_name}_z_{chain_id}.pkl")
+
+                if not path.exists():
+                    loaded = []
+                    break
+
+                with open(path, "rb") as f:
+                    z = pickle.load(f)
+
+                z = np.asarray(z, float)
+
+                if z.shape != (self.N_meas,  4):
+                    loaded = []
+                    break
+
+                loaded.append(z)
+            if len(loaded) == self.n_chains:
+                print(
+                    "Loaded starting z states "
+                    "from pickles")
+                return loaded
+        print(
+            "Generating new starting z states"
+        )
+        starts = []
+        for chain_id in range(self.n_chains):
+
+            rng = np.random.default_rng(init_seeds[chain_id]
             )
-        return thetas
+            z = self.Initial_Guess_z(rng)
+            starts.append(z)
+        return starts
 
     def Run_MCMC(self):
-        all_thetas = self.check_starting_parameters()
-        for cid, th in enumerate(all_thetas):
-            if th is None or (not isinstance(th, (tuple, list))) or len(th) != 4:
-                raise ValueError(f"Bad starting θ for chain {cid}: {th}")
 
-        def run_chain(theta, chain_id):
-            return self.MCMC(theta, self.iterations, chain_id)
+        # --------------------------------------------------------
+        # Independent random streams
+        # --------------------------------------------------------
 
-        results = Parallel(n_jobs=-1)(
-            delayed(run_chain)(all_thetas[chain_id], chain_id)
-            for chain_id in range(self.n_chains)
+        seed_sequence = (np.random.SeedSequence(self.seed
+            )
         )
 
+        children = seed_sequence.spawn(2 * self.n_chains
+        )
+
+        init_seeds = [int(s.generate_state(1)[0]) for s in children[:self.n_chains]]
+
+        chain_seeds = [ int( s.generate_state(1)[0]) for s in children[self.n_chains:]]
+        # --------------------------------------------------------
+        # Initial states
+        # --------------------------------------------------------
+        all_z = (self.check_starting_parameters(init_seeds))
+        
+        # --------------------------------------------------------
+        # Run independent chains
+        # --------------------------------------------------------
+        def run_chain(z, chain_id, seed,):
+
+            return self.MCMC(z, self.iterations, chain_id, seed)
+
+        results = Parallel(n_jobs=-1)(
+                        delayed(run_chain)(
+                            all_z[chain_id],
+                            chain_id,
+                            chain_seeds[chain_id],
+                    )
+            for chain_id in range(self.n_chains))
         self.Chain_Results = results
         return self.Chain_Results
 

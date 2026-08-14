@@ -5,7 +5,7 @@ import pickle
 import numpy as np
 
 from scipy.stats import norm, lognorm, truncnorm
-from scipy.special import log_ndtr
+from scipy.special import log_ndtr, logsumexp
 from scipy.interpolate import interp1d
 from scipy.optimize import brentq, minimize, minimize_scalar
 
@@ -13,54 +13,91 @@ from sklearn.neighbors import KernelDensity
 from sklearn.model_selection import GridSearchCV
 from pathlib import Path
 
+"""
+There is an issue with the np.trapz, I need to update this code. Will fix soon. 14/8/2026.
+"""
+
 # =============================================================================
 # Prior object
 # =============================================================================
 class ThoriumPrior1D:
-    """
-    1D prior with:
-      - pdf(x)
-      - rvs(size=n) using inverse-CDF on the saved grid/pdf
-    """
-    def __init__(self, grid, pdf, rng=None):
-        self.grid = np.asarray(grid, float)
-        self.pdf_grid = np.asarray(pdf, float)
-        self.rng = rng if rng is not None else np.random.default_rng()
 
-        Z = np.trapz(self.pdf_grid, self.grid)
+    def __init__(self, grid, pdf, rng=None):
+
+        self.grid = np.asarray(grid, dtype=float)
+        self.pdf_grid = np.asarray(pdf, dtype=float)
+
+        self.rng = (
+            rng
+            if rng is not None
+            else np.random.default_rng()
+        )
+        try:
+            self.trapezoid = np.trapezoid   # NumPy verison control help
+        except AttributeError:
+            self.trapezoid = np.trapz       # NumPy verison control help
+
+        Z = self.trapezoid(
+            self.pdf_grid,
+            self.grid,
+        )
+
         if not np.isfinite(Z) or Z <= 0:
-            raise ValueError("Prior pdf does not integrate to a positive finite value.")
-        self.pdf_grid = self.pdf_grid / Z
+            raise ValueError(
+                "Prior PDF does not integrate to a positive finite value."
+            )
+
+        self.pdf_grid /= Z
 
         dx = np.diff(self.grid)
-        if np.any(dx <= 0):
-            raise ValueError("grid must be strictly increasing.")
 
-        cdf = np.cumsum(self.pdf_grid[:-1] * dx)
-        cdf = np.concatenate([[0.0], cdf])
-        cdf = cdf / cdf[-1]
-
-        self._inv_cdf = interp1d(
-            cdf, self.grid,
-            bounds_error=False,
-            fill_value=(self.grid[0], self.grid[-1]),
+        areas = (
+            0.5
+            * (self.pdf_grid[:-1] + self.pdf_grid[1:])
+            * dx
         )
 
-        self._pdf = interp1d(
-            self.grid, self.pdf_grid,
-            bounds_error=False,
-            fill_value=(0.0, 0.0),
-        )
+        cdf = np.concatenate([
+            [0.0],
+            np.cumsum(areas),
+        ])
+
+        cdf /= cdf[-1]
+        cdf[0] = 0.0
+        cdf[-1] = 1.0
+
+        keep = np.concatenate([
+            [True],
+            np.diff(cdf) > 0,
+        ])
+
+        self._cdf = cdf[keep]
+        self._cdf_grid = self.grid[keep]
 
     def pdf(self, x):
-        x = np.asarray(x, float)
-        return np.asarray(self._pdf(x), float)
+
+        x = np.asarray(x, dtype=float)
+
+        return np.interp(
+            x,
+            self.grid,
+            self.pdf_grid,
+            left=0.0,
+            right=0.0,
+        )
+
+    def __call__(self, x):
+        return self.pdf(x)
 
     def rvs(self, size=1):
+
         u = self.rng.random(int(size))
-        return np.asarray(self._inv_cdf(u), float)
 
-
+        return np.interp(
+            u,
+            self._cdf,
+            self._cdf_grid,
+        )
 # =============================================================================
 # U-series age equation (single analysis)
 # =============================================================================
@@ -214,48 +251,36 @@ class IBIS_Thoth_Robust:
 
         # r02 relative uncertainty proposal
         r02_err_mode="halfnorm",   # "fixed"|"uniform"|"halfnorm"
-        r02_rel_err=0.25,
-        r02_rel_min=0.005,
-        r02_rel_max=0.5,
+        r02_rel_err=0.25,r02_rel_min=0.005, r02_rel_max=0.5,
 
         # validity gates
-        age_sigma_gate=2.0,
-        age_eps=1e-12,
-
-        # sigma cheating prevention (EB): default False
-        use_r02_in_sigma=True,
+        age_sigma_gate=2.0, age_eps=1e-12,
 
         # batch sampler controls
-        batch_size=600,
-        max_batches=400,
-        keep_frac=0.08,
-        keep_factor=8,
+        use_r02_in_sigma=False,
+
+        batch_size=600, max_batches=400, candidate_factor=6, kde_beta=1.0,
+
+        bandwidth_multiplier=1.4, bandwidth_min=0.05, bandwidth_max=1.0,
+
+        grid_n=2000,  random_seed=None,
 
         # layer windows
         neighbors=1,
 
         # pair weighting
         pair_weight_mode="exp",   # "none"|"exp"|"power"
-        pair_tau_layers=2.0,
-        pair_alpha=1.0,
-        min_pair_weight=1e-6,
+        pair_tau_layers=2.0, pair_alpha=1.0, min_pair_weight=1e-6,
 
         # prior mixture
-        global_mass=0.7,
-        n_samples_global=4000,
-        n_samples_layer=2500,
+        global_mass=0.7,n_samples_global=4000, n_samples_layer=2500,
 
         # KDE fit controls
-        kde_beta=0.6,
-        bw_grid=None,
-        cv=5,
-        bw_subsample=3000,
-        grid_n=1200,
-        hi_pct=99.9,
-        floor_pdf=1e-12,
+        bw_grid=None, cv=5, bw_subsample=3000,
+        hi_pct=99.9,  floor_pdf=1e-12,
     )
 
-    def __init__(self, data, age_max, file_name="FILENAME", depth_col="Depths", diction_meta=None, save_dir = None):
+    def __init__(self, data, age_max, file_name="FILENAME", depth_col="Depths", diction_meta=None, save_dir = None, rng=None):
         self.data = data
         self.age_max = float(age_max)
         self.file_name = str(file_name)
@@ -298,6 +323,17 @@ class IBIS_Thoth_Robust:
             self.save_dir = Path.cwd()
 
         self.save_dir.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            self.trapezoid = np.trapezoid   # NumPy 2.x
+        except AttributeError:
+            self.trapezoid = np.trapz       # NumPy 1.x
+    
+        self.rng = (
+            rng
+            if rng is not None
+            else np.random.default_rng()
+        )
     # --------------------------
     # sorting + layers
     # --------------------------
@@ -315,10 +351,33 @@ class IBIS_Thoth_Robust:
         self.r48_err = self.r48_err[order]
 
     def _build_layers(self):
-        self.layer_depths = np.unique(self.depths)
-        self.layer_to_indices = {d: np.where(self.depths == d)[0] for d in self.layer_depths}
-        depth_to_id = {d: i for i, d in enumerate(self.layer_depths)}
-        self.layer_id = np.array([depth_to_id[d] for d in self.depths], dtype=int)
+
+        layer_depths = np.unique(self.depths)
+
+        if not bool(
+            self.meta.get(
+                "depth_increases_down",
+                True,
+            )
+        ):
+            layer_depths = layer_depths[::-1]
+
+        self.layer_depths = layer_depths
+
+        self.layer_to_indices = {
+            d: np.where(self.depths == d)[0]
+            for d in self.layer_depths
+        }
+
+        depth_to_id = {
+            d: i
+            for i, d in enumerate(self.layer_depths)
+        }
+
+        self.layer_id = np.array(
+            [depth_to_id[d] for d in self.depths],
+            dtype=int,
+        )
 
     def indices_for_layer_window(self, layer_depth, neighbors=1):
         layer_depths = self.layer_depths
@@ -693,91 +752,198 @@ class IBIS_Thoth_Robust:
     # --------------------------
     # MAIN sampler (bounded r02!)
     # --------------------------
-    def sample_r02_distribution(self, idx=None, desired=2000, verbose=True):
+    def sample_r02_distribution(
+        self,
+        idx=None,
+        desired=2000,
+        verbose=True,
+    ):
         """
-        Returns: r02_draws, r02_err_draws, weights
-        Weights ∝ exp(strat_ll + logp_rel)
-
-        Uses bounded r02 proposals:
-          r02 <= min_i (r08_i + kσ)/(r28_i - kσ) over the window.
+        Draw r02 candidates from the boutique prior and weight them by
+        the stratigraphic likelihood.
+    
+        Important:
+        - No hard "top X%" selection.
+        - No double-counting of the r02_err proposal density.
+        - All valid candidates contribute continuously according to likelihood.
+    
+        Returns
+        -------
+        r02_draws : ndarray
+            Candidate initial-Th values.
+    
+        r02_err_draws : ndarray
+            Associated proposed uncertainties.
+    
+        weights : ndarray
+            Normalized importance weights proportional to the
+            stratigraphic likelihood.
         """
+    
         if idx is None:
             idx = np.arange(self.depths.size, dtype=int)
-        idx = np.asarray(idx, int)
-
-        # window-specific r02 upper bound
-        k_sigma_bound = float(self.meta.get("r02_max_k_sigma", 2.0))
-        r02_hi = self.r02_hi_from_measured_230232_and_uncorr_age(idx=idx, k_sigma=k_sigma_bound)
-
-
+    
+        idx = np.asarray(idx, dtype=int)
+    
+        # ------------------------------------------------------------
+        # Window-specific upper bound
+        # ------------------------------------------------------------
+    
+        k_sigma_bound = float(
+            self.meta.get("r02_max_k_sigma", 2.0)
+        )
+    
+        r02_hi = self.r02_hi_from_measured_230232_and_uncorr_age(
+            idx=idx,
+            k_sigma=k_sigma_bound,
+        )
+    
+        # ------------------------------------------------------------
+        # Sampling controls
+        # ------------------------------------------------------------
+    
         desired = int(desired)
-        keep_factor = int(self.meta.get("keep_factor", 8))
-        target_keep = int(desired * keep_factor)
-
-        batch_size = int(self.meta.get("batch_size", 600))
-        max_batches = int(self.meta.get("max_batches", 400))
-        keep_frac = float(self.meta.get("keep_frac", 0.08))
-        use_r02_in_sigma = bool(self.meta.get("use_r02_in_sigma", False))
-
+    
+        # Generate more candidates than ultimately needed by the KDE.
+        # This gives a stable weighted representation.
+        candidate_factor = int(
+            self.meta.get("candidate_factor", 6)
+        )
+    
+        target_valid = desired * candidate_factor
+    
+        batch_size = int(
+            self.meta.get("batch_size", 600)
+        )
+    
+        max_batches = int(
+            self.meta.get("max_batches", 400)
+        )
+    
+        use_r02_in_sigma = bool(
+            self.meta.get("use_r02_in_sigma", False)
+        )
+    
         layer_ids = self.layer_id[idx]
-
-        kept_r02, kept_e02, kept_ll = [], [], []
-
+    
+        # ------------------------------------------------------------
+        # Storage
+        # ------------------------------------------------------------
+    
+        kept_r02 = []
+        kept_e02 = []
+        kept_ll = []
+    
+        # ------------------------------------------------------------
+        # Sampling
+        # ------------------------------------------------------------
+    
         for b in range(max_batches):
-            r02 = self.boutique_thoriums_bounded(batch_size, r02_hi=r02_hi)
-            e02, logp_rel = self.sample_r02_err(r02)
-
-            ll_total = np.full(batch_size, -np.inf, float)
-
+    
+            r02 = self.boutique_thoriums_bounded(
+                batch_size,
+                r02_hi=r02_hi,
+            )
+    
+            e02, _ = self.sample_r02_err(r02)
+    
+            ll_total = np.full(
+                batch_size,
+                -np.inf,
+                dtype=float,
+            )
+    
             for j in range(batch_size):
-                r02_err_for_ageunc = float(e02[j]) if use_r02_in_sigma else 0.0
-                ages, errs = self.compute_ages_for_indices(idx, r02[j], r02_err_for_ageunc=r02_err_for_ageunc)
-
+    
+                if use_r02_in_sigma:
+                    r02_err_for_ageunc = float(e02[j])
+                else:
+                    r02_err_for_ageunc = 0.0
+    
+                ages, errs = self.compute_ages_for_indices(
+                    idx,
+                    r02[j],
+                    r02_err_for_ageunc=r02_err_for_ageunc,
+                )
+    
                 if not self._valid_ages(ages, errs):
                     continue
-
-                ll_strat = self.strat_loglik(ages, errs, layer_ids)
-                ll_total[j] = float(ll_strat) + float(logp_rel[j])
-
+    
+                ll_strat = self.strat_loglik(
+                    ages,
+                    errs,
+                    layer_ids,
+                )
+    
+                if np.isfinite(ll_strat):
+                    ll_total[j] = float(ll_strat)
+    
+            # --------------------------------------------------------
+            # Keep ALL valid candidates
+            # --------------------------------------------------------
+    
             good = np.isfinite(ll_total)
+    
             if not np.any(good):
+    
                 if verbose and (b % 10 == 0):
-                    print(f"[thoth] batch {b+1}/{max_batches}: 0 valid (r02_hi={r02_hi:.4g})")
+                    print(
+                        f"[thoth] batch {b + 1}/{max_batches}: "
+                        f"0 valid (r02_hi={r02_hi:.4g})"
+                    )
+    
                 continue
-
-            good_idx = np.where(good)[0]
-            kkeep = max(10, int(np.ceil(keep_frac * good_idx.size)))
-            top_local = np.argsort(ll_total[good_idx])[-kkeep:]
-            chosen = good_idx[top_local]
-
-            kept_r02.extend(r02[chosen].tolist())
-            kept_e02.extend(e02[chosen].tolist())
-            kept_ll.extend(ll_total[chosen].tolist())
-
-            if verbose and (b % 100 == 0):
-                print(f"[thoth] batch {b+1}/{max_batches}: valid={good_idx.size} kept_total={len(kept_r02)} (r02_hi={r02_hi:.4g})")
-
-            if len(kept_r02) >= target_keep:
+    
+            kept_r02.extend(r02[good])
+            kept_e02.extend(e02[good])
+            kept_ll.extend(ll_total[good])
+    
+            if verbose and (b % 25 == 0):
+    
+                print(
+                    f"[thoth] batch {b + 1}/{max_batches}: "
+                    f"valid={np.sum(good)}, "
+                    f"total={len(kept_r02)}, "
+                    f"r02_hi={r02_hi:.4g}"
+                )
+    
+            if len(kept_r02) >= target_valid:
                 break
-
-        kept_r02 = np.asarray(kept_r02, float)
-        kept_e02 = np.asarray(kept_e02, float)
-        kept_ll = np.asarray(kept_ll, float)
-
+    
+        # ------------------------------------------------------------
+        # Convert
+        # ------------------------------------------------------------
+    
+        kept_r02 = np.asarray(
+            kept_r02,
+            dtype=float,
+        )
+    
+        kept_e02 = np.asarray(
+            kept_e02,
+            dtype=float,
+        )
+    
+        kept_ll = np.asarray(
+            kept_ll,
+            dtype=float,
+        )
+    
         if kept_r02.size == 0:
-            return np.array([]), np.array([]), np.array([])
-
-        w = np.exp(kept_ll - np.max(kept_ll))
-        w /= w.sum()
-
-        if kept_r02.size > desired:
-            top = np.argsort(w)[-desired:]
-            kept_r02 = kept_r02[top]
-            kept_e02 = kept_e02[top]
-            kept_ll = kept_ll[top]
-            w = w[top]
-            w /= w.sum()
-
+            return (
+                np.array([], dtype=float),
+                np.array([], dtype=float),
+                np.array([], dtype=float),
+            )
+    
+        # ------------------------------------------------------------
+        # Stable likelihood weights
+        # ------------------------------------------------------------
+    
+        log_w = kept_ll - logsumexp(kept_ll)
+    
+        w = np.exp(log_w)
+    
         return kept_r02, kept_e02, w
 
     def sample_global(self, desired=None, verbose=True):
@@ -911,7 +1077,39 @@ class IBIS_Thoth_Robust:
             raise ValueError("No draws available (global and layer windows both empty).")
 
         bw_pool = np.concatenate(bw_pool)
-        bw = self._select_bw_unweighted(np.log(bw_pool), bw_grid=bw_grid, cv=cv)
+
+        bw_raw = self._select_bw_unweighted(
+            np.log(bw_pool),
+            bw_grid=bw_grid,
+            cv=cv,
+        )
+        
+        bw_multiplier = float(
+            self.meta.get("bandwidth_multiplier", 1.4)
+        )
+        
+        bw_min = float(
+            self.meta.get("bandwidth_min", 0.05)
+        )
+        
+        bw_max = float(
+            self.meta.get("bandwidth_max", 1.0)
+        )
+        
+        bw = float(
+            np.clip(
+                bw_raw * bw_multiplier,
+                bw_min,
+                bw_max,
+            )
+        )
+
+        if verbose:
+            print(
+                f"[thoth] KDE bandwidth: "
+                f"raw={bw_raw:.4f}, "
+                f"used={bw:.4f}"
+            )
 
         # 4) fit global KDE
         kdes = []
@@ -981,11 +1179,39 @@ class IBIS_Thoth_Robust:
                 all_draws.append(r)
 
         all_draws = np.concatenate(all_draws)
-        lo = max(float(np.min(all_draws)), 1e-8)
-        hi = float(np.percentile(all_draws, hi_pct))
-        hi = max(hi*1.1, lo * 1.01)
-
-        grid_log = np.linspace(np.log(lo), np.log(hi), int(grid_n))
+        
+        log_draws = np.log(all_draws)
+        
+        r02_min = float(
+            self.meta.get(
+                "r02_min",
+                1e-6,
+            )
+        )
+        
+        r02_max = float(
+            self.meta.get(
+                "r02_hi_hard_cap",
+                1e6,
+            )
+        )
+        
+        log_lo = max(
+            np.log(r02_min),
+            np.min(log_draws) - 4.0 * bw,
+        )
+        
+        log_hi = min(
+            np.log(r02_max),
+            np.max(log_draws) + 4.0 * bw,
+        )
+        
+        grid_log = np.linspace(
+            log_lo,
+            log_hi,
+            grid_n,
+        )
+        
         grid = np.exp(grid_log)
 
         # 7) evaluate mixture in log-space then back-transform
@@ -996,12 +1222,27 @@ class IBIS_Thoth_Robust:
 
         pdf = pdf_log / grid  # Jacobian 1/r
 
-        Z = float(np.trapz(pdf, grid))
+        Z = float(self.trapezoid(pdf,grid))
+        
         if (not np.isfinite(Z)) or (Z <= 0):
-            pdf[:] = floor_pdf
-        else:
-            pdf /= Z
-            pdf = np.maximum(pdf, floor_pdf)
+        
+            raise ValueError(
+                "Constructed prior has non-positive or non-finite integral."
+            )
+        
+        pdf /= Z
+        
+        # Numerical floor
+        pdf = np.maximum(
+            pdf,
+            floor_pdf,
+        )
+        
+        # Renormalize AFTER applying the floor
+        pdf /= self.trapezoid(
+            pdf,
+            grid,
+        )
 
         self._thor_prior_grid = grid
         self._thor_prior_pdf = pdf
@@ -1017,7 +1258,12 @@ class IBIS_Thoth_Robust:
         )
 
         # convenient callable
-        self.Thorium_prior = interp1d(grid, pdf, bounds_error=False, fill_value=floor_pdf)
+        self.Thorium_prior = ThoriumPrior1D(
+            grid,
+            pdf,
+            rng=self.rng,
+        )
+
         return self.Thorium_prior
 
     # --------------------------
@@ -1091,7 +1337,7 @@ class IBIS_Thoth_Robust:
         if full_path.exists():
             with open(full_path, 'rb') as f:
                 self.Thorium_prior = pickle.load(f)
-            print(f"Initial thorium prior loaded from {full_name}")
+            print(f"Initial thorium prior loaded from {full_path}")
         else:
-            print(f"No prior at {full_name}, will compute and save now")
+            print(f"No prior at {full_path}, will compute and save now")
             self.save_thor_prior()
