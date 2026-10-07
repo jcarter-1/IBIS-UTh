@@ -14,7 +14,7 @@ source .venv/bin/activate
 (2) Install IBIS + jupyter kernel support
 pip install --upgrade pip
 pip install ibis-uth
-pip instal jupyterlab ipykernel
+pip install jupyterlab ipykernel
 
 (3) Register the Kernel 
 python -m ipykernel install --user --name ibis --display-name "Python (IBIS)"
