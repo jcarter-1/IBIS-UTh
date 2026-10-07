@@ -4,25 +4,36 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ibis-uth"
-version = "0.3.0"
+version = "0.3.2"
 description = "IBIS: Integrated Bayesian Initial-Th correction + age-depth modeling for speleothems"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12,<3.15"
 
 dependencies = [
-  "numpy",
-  "pandas",
-  "scipy",
-  "scikit-learn",
-  "matplotlib",
-  "tqdm",
-  "joblib",
-  "dill",
-  "scikit-learn",
-  "openpyxl"]
+  "numpy>=2.5.3,<3",
+  "pandas>=3.0.6,<4",
+  "scipy>=1.18.1,<2",
+  "scikit-learn>=1.9.1,<2",
+  "matplotlib>=3.11.2,<4",
+  "tqdm>=4.70.1,<5",
+  "joblib>=1.6.0,<2",
+  "dill>=0.4.1,<1",
+  "openpyxl>=3.1.5,<4",
+]
+
+[project.optional-dependencies]
+notebook = [
+  "ipykernel>=7.4.0,<8",
+  "jupyterlab>=4.6.4,<5",
+]
+dev = [
+  "build>=1.2,<2",
+  "twine>=6,<7",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["ibis", "ibis.*"]

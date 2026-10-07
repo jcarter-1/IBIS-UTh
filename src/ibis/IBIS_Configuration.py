@@ -11,21 +11,28 @@ class IBIS_Configuration_Class:
     This is a precusor to the model and neccassary for defining parameters and 
     distributions required for the IBIS Bayesian model. 
     """
-    def __init__(self, filepath, data_uncertainty_level = None):
+    def __init__(self, filepath, meta=None):
         """
-        Initialize the IBIS model with 
-        default configurations. 
+        Initialize the IBIS model with default configurations.
         """
+
         self.filepath = filepath
+        self.meta = dict(meta) if meta is not None else {}
+
+        self.uncertainty_type = self.meta.get(
+            "uncertainty_type",
+            "abs"
+        )
+
+        self.uncert_level = float(
+            self.meta.get(
+                "uncertainty_level",
+                1.0)
+                )
+        
         # Data
         self.Input_Data = None
         self.load_data()
-        if data_uncertainty_level is None:
-            self.uncert_level = 1.0
-        if data_uncertainty_level is '1sig':
-            self.uncert_level = 1.0
-        if data_uncertainty_level is '2sig':
-            self.uncert_level = 2.0
     
     def load_data(self): 
         """
@@ -74,41 +81,41 @@ class IBIS_Configuration_Class:
 
     def _230Th_val(self):
         # allowed depth column names, in order of preference
-        for col in ["230Th_238U_activity", "Th_230_r", "Th230_r"]:
+        for col in ["230Th_238U_activity", "Th_230_r", "Th230_r", "Th_230_r"]:
             if col in self.input_data.columns:
                 return self.input_data[col].to_numpy()
         raise KeyError("No depth column found (expected one of: '230Th_238U_activity', 'Th_230_r', 'Th230_r').")
         
     def _230Th_err(self):
         # allowed depth column names, in order of preference
-        for col in ["230Th_238U_activity_uncertainty", "Th_230_r_err", "Th230_r_err"]:
+        for col in ["230Th_238U_activity_uncertainty", "Th_230_r_err", "Th230_r_err", "Th_230_r_2 SEM absolute-err"]:
             if col in self.input_data.columns:
                 return self.input_data[col].to_numpy()
-        raise KeyError("No depth column found (expected one of: '230Th_238U_activity_uncertainty', 'Th_230_r_err', 'Th230_r_err').")
+        raise KeyError("No depth column found (expected one of: '230Th_238U_activity_uncertainty', 'Th_230_r_err', 'Th230_r_err', 'Th_230_r_2 SEM absolute-err').")
         
     def _232Th_val(self):
         # allowed depth column names, in order of preference
-        for col in ["232Th_238U_activity", "Th_232_r", "Th232_r"]:
+        for col in ["232Th_238U_activity", "Th_232_r", "Th232_r", "Th_232_r"]:
             if col in self.input_data.columns:
                 return self.input_data[col].to_numpy()
         raise KeyError("No depth column found (expected one of: '232Th_238U_activity', 'Th_232_r', 'Th232_r').")
         
     def _232Th_err(self):
         # allowed depth column names, in order of preference
-        for col in ["232Th_238U_activity_uncertainty", "Th_232_r_err", "Th232_r_err"]:
+        for col in ["232Th_238U_activity_uncertainty", "Th_232_r_err", "Th232_r_err", "Th_232_r_2 SEM absolute-err"]:
             if col in self.input_data.columns:
                 return self.input_data[col].to_numpy()
         raise KeyError("No depth column found (expected one of: '232Th_238U_activity_uncertainty', 'Th_232_r_err', 'Th232_r_err').")
         
     def _234U_val(self):
         # allowed depth column names, in order of preference
-        for col in ["234U_238U_activity", "U_234_r", "U234_r"]:
+        for col in ["234U_238U_activity", "U_234_r", "U234_r", "U_234_r"]:
             if col in self.input_data.columns:
                 return self.input_data[col].to_numpy()
         raise KeyError("No depth column found (expected one of: '234U_238U_activity', 'U_234_r', 'U234_r').")
         
     def _234U_err(self):
-        for col in ["234U_238U_activity_uncertainty", "U_234_r_err", "U234_r_err"]:
+        for col in ["234U_238U_activity_uncertainty", "U_234_r_err", "U234_r_err", "U_234_r_2 SEM absolute-err"]:
             if col in self.input_data.columns:
                 return self.input_data[col].to_numpy()
         raise KeyError("No depth column found (expected one of: '234U_238U_activity_uncertainty', 'U_234_r_err', 'U234_r_err').")
@@ -135,16 +142,30 @@ class IBIS_Configuration_Class:
         
         # Creaing a DataFrame with the extracted data
         # Uncertainties used throughout are at 1sigma analytical
-        self.df_ratios = pd.DataFrame({
-            "Th230_238U_ratios": Th230_238U_ratios,
-            "Th230_238U_ratios_err": Th230_238U_ratios_err / self.uncert_level,
-            "Th232_238U_ratios": Th232_238U_ratios,
-            "Th232_238U_ratios_err": Th232_238U_ratios_err / self.uncert_level,
-            "U234_U238_ratios": U234_U238_ratios,
-            "U234_U238_ratios_err": U234_U238_ratios_err / self.uncert_level,
-            "Depths": Depths,
-            "Depths_err": Depths_err / self.uncert_level
-        })
+
+        if self.uncertainty_type == 'abs':
+            self.df_ratios = pd.DataFrame({
+                "Th230_238U_ratios": Th230_238U_ratios,
+                "Th230_238U_ratios_err": Th230_238U_ratios_err / self.uncert_level,
+                "Th232_238U_ratios": Th232_238U_ratios,
+                "Th232_238U_ratios_err": Th232_238U_ratios_err / self.uncert_level,
+                "U234_U238_ratios": U234_U238_ratios,
+                "U234_U238_ratios_err": U234_U238_ratios_err / self.uncert_level,
+                "Depths": Depths,
+                "Depths_err": Depths_err / self.uncert_level
+            })
+        
+        elif self.uncertainty_type == "rel":
+            self.df_ratios = pd.DataFrame({
+                "Th230_238U_ratios": Th230_238U_ratios,
+                "Th230_238U_ratios_err": (Th230_238U_ratios_err / (100 *self.uncert_level)) * Th230_238U_ratios,
+                "Th232_238U_ratios": Th232_238U_ratios,
+                "Th232_238U_ratios_err": (Th232_238U_ratios_err / (100 *self.uncert_level)) * Th232_238U_ratios,
+                "U234_U238_ratios": U234_U238_ratios,
+                "U234_U238_ratios_err": (U234_U238_ratios_err / (100 * self.uncert_level)) * U234_U238_ratios,
+                "Depths": Depths,
+                "Depths_err": Depths_err / self.uncert_level
+            })
 
         return self.df_ratios
 

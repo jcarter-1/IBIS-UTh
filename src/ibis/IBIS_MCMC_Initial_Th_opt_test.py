@@ -1,19 +1,21 @@
+import os
+import time
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+
 from scipy.optimize import brentq
 from scipy.stats import norm, uniform
 from scipy.special import log_ndtr
 from scipy.interpolate import interp1d
+from scipy.integrate import trapezoid
+
 from tqdm import tqdm
 import dill as pickle
-import time, os, random, warnings
+
 from joblib import Parallel, delayed
-from pathlib import Path
-from collections import defaultdict
-
-warnings.filterwarnings("ignore")
-
 # ---------- fast----------
 _LOG_SQRT_2PI = 0.5 * np.log(2.0 * np.pi)
 def _norm_logpdf_vector(x, mu, sig):
@@ -84,10 +86,7 @@ class ThoriumPrior:
         # enforce support
         pdf[(x < self.TH0_MIN) | (x > self.TH0_MAX)] = 0.0
         
-        try:
-            self.trapezoid = np.trapezoid   # NumPy verison control help
-        except AttributeError:
-            self.trapezoid = np.trapz       # NumPy verison control help
+        self.trapezoid = trapezoid
 
         area = self.trapezoid(pdf, x)
         if not np.isfinite(area) or area <= 0:
@@ -150,8 +149,10 @@ class IBIS_MCMC:
                  save_dir=None, print_diagnostics=False,
                  proposal_scale=0.25,
                  store_thin=5,
-                 seed=12345):
-
+                 seed=12345, meta= None, n_jobs=1):
+                 
+        self.n_jobs = n_jobs
+        self.meta = dict(meta) if meta is not None else {}
         self.method = method
         self.data = data
         self.burn_in = int(burn_in)
@@ -166,8 +167,27 @@ class IBIS_MCMC:
         self._depth_order = np.argsort(self.depths)
         self.depths = self.depths[self._depth_order]
         self.print_diagnostics = print_diagnostics
+        self.Age_Minimum = float(self.meta.get("age_minimum", 0.0))
 
-        self.Age_Solve_Max = 5.0 * float(self.Age_Maximum)
+        self.Age_Maximum = float(
+            min(
+                1e6,
+                self.meta.get(
+                    "age_maximum",
+                    3.0 * float(self.Age_Maximum)
+                )
+            )
+        )
+        
+
+        if self.Age_Minimum < 0:
+            raise ValueError("Age_Minimum cannot be negative.")
+
+        if self.Age_Minimum >= self.Age_Maximum:
+            raise ValueError(
+                "Age_Minimum must be less than Age_Maximum."
+            )
+        
         self.Age_Uncertainties = np.asarray(Age_Uncertainties, float)[self._depth_order]
 
         self.Th230_lam = 9.17055e-06   # Cheng et al. (2013)
@@ -248,7 +268,7 @@ class IBIS_MCMC:
         if not np.any(ok):
             return 1e6
         r_meas = r08_hi[ok] / r28_lo[ok]
-        r0_upper = r_meas * np.exp(l230 * self.Age_Solve_Max)
+        r0_upper = r_meas * np.exp(l230 * self.Age_Maximum)
         hi = float(np.nanmax(r0_upper))
         hi = max(hi * 1.25, 10.0)
         return min(hi, 1e6)
@@ -282,15 +302,25 @@ class IBIS_MCMC:
         return -1 if idx == j else +1
 
     # ---------------- age solver ----------------
-    def U_series_age_equation(self, age, Th_initial, Th232_ratio, U234_ratio, Th230_ratio):
+    def U_series_age_equation(
+        self,
+        age,
+        Th_initial,
+        Th232_ratio,
+        U234_ratio,
+        Th230_ratio
+    ):
         dlam = self.Th230_lam - self.U234_lam
-        L1 = Th230_ratio
-        L2 = Th232_ratio * Th_initial * np.exp(-self.Th230_lam * age)
-        R1 = 1.0 - np.exp(-self.Th230_lam * age)
-        if abs(dlam) < 1e-12:
-            return np.nan
-        R2 = (U234_ratio - 1.0) * (self.Th230_lam / dlam) * (1.0 - np.exp(-dlam * age))
-        return L1 - L2 - R1 - R2
+
+        return (
+            Th230_ratio
+            - Th232_ratio * Th_initial
+              * np.exp(-self.Th230_lam * age)
+            - (1.0 - np.exp(-self.Th230_lam * age))
+            - (U234_ratio - 1.0)
+              * (self.Th230_lam / dlam)
+              * (1.0 - np.exp(-dlam * age))
+    )
 
     def _age_fun_and_deriv(self, a, Th_initial, Th232, U234, Th230):
         l230 = self.Th230_lam
@@ -303,104 +333,280 @@ class IBIS_MCMC:
         fp = l230 * e230 * (Th232 * Th_initial - 1.0) - l230 * (U234 - 1.0) * ed
         return f, fp
 
-    def _solve_age_single(self, Th_initial, Th232, U234, Th230, a0, amax, newton_max=8):
+    def _solve_age_single(
+        self,
+        Th_initial,
+        Th232,
+        U234,
+        Th230,
+        a0,
+        amax,
+        newton_max=8
+    ):
+
         amin = 0.0
         amax = float(amax)
 
         def g(t):
-            return self.U_series_age_equation(t, Th_initial, Th232, U234, Th230)
+            return self.U_series_age_equation(
+                t,
+                Th_initial,
+                Th232,
+                U234,
+                Th230
+            )
 
-        # ---------- 0) quick near-zero handling ----------
-        g0 = g(0.0)
-        if np.isfinite(g0) and abs(g0) < 1e-50:
-            return 0.0
+        # ============================================================
+        # 1. NEWTON PHASE
+        # ============================================================
 
-        # Try an extremely small positive time to catch a root ~0
-        tiny = min(1e-8 * amax, 1e-6)  # absolute cap so it works even if amax huge
-        gt = g(tiny)
-        if np.isfinite(g0) and np.isfinite(gt) and (g0 * gt <= 0.0):
-            try:
-                root = brentq(g, 0.0, tiny, maxiter=200)
-                if np.isfinite(root) and (0.0 <= root <= amax):
-                    return float(root)
-            except Exception:
-                pass
+        if np.isfinite(a0):
 
-        # ---------- 1) Newton phase (only if a0 is usable) ----------
-        a = np.clip(a0 if np.isfinite(a0) else 0.5 * amax, max(1e-12, amin), amax)
+            a = np.clip(
+                float(a0),
+                amin,
+                amax
+            )
 
-        for _ in range(int(newton_max)):
-            f, fp = self._age_fun_and_deriv(a, Th_initial, Th232, U234, Th230)
-            if (not np.isfinite(f)) or (not np.isfinite(fp)) or abs(fp) < 1e-14:
-                break
+            for _ in range(newton_max):
 
-            step = f / fp
-            a_new = a - step
+                f, fp = self._age_fun_and_deriv(
+                    a,
+                    Th_initial,
+                    Th232,
+                    U234,
+                    Th230
+                )
 
-            if (a_new < amin) or (a_new > amax):
-                a_new = np.clip(a - 0.5 * step, amin, amax)
+                if (
+                    not np.isfinite(f)
+                    or not np.isfinite(fp)
+                    or abs(fp) < 1e-14
+                ):
+                    break
 
-            if abs(a_new - a) < 1e-10 * max(1.0, a):
-                if np.isfinite(a_new) and (amin <= a_new <= amax):
+                step = f / fp
+                a_new = a - step
+
+                # ----------------------------------------------------
+                # IMPORTANT:
+                # if Newton tries to leave the valid age interval,
+                # abandon Newton rather than sticking to the boundary.
+                # ----------------------------------------------------
+
+                if (
+                    a_new <= amin
+                    or a_new >= amax
+                ):
+                    break
+
+                # ----------------------------------------------------
+                # Only declare convergence if BOTH:
+                #
+                # 1. age movement is tiny
+                # 2. equation residual is tiny
+                # ----------------------------------------------------
+
+                f_new = g(a_new)
+
+                age_converged = (
+                    abs(a_new - a)
+                    < 1e-10 * max(1.0, abs(a))
+                )
+
+                function_converged = (
+                    np.isfinite(f_new)
+                    and abs(f_new) < 1e-10
+                )
+
+                if (
+                    age_converged
+                    and function_converged
+                ):
                     return float(a_new)
-                break
 
-            a = a_new
+                a = a_new
 
-        # ---------- 2) local bracket around Newton landing ----------
-        left  = max(amin, a - 0.2 * amax)
-        right = min(amax, a + 0.2 * amax)
-        fL, fR = g(left), g(right)
+        else:
 
-        if np.isfinite(fL) and np.isfinite(fR) and (fL * fR <= 0.0):
+            a = 0.5 * amax
+
+        # ============================================================
+        # 2. LOCAL BRENT BRACKET
+        # ============================================================
+
+        width = 0.20 * amax
+
+        left = max(
+            amin,
+            a - width
+        )
+
+        right = min(
+            amax,
+            a + width
+        )
+
+        fL = g(left)
+        fR = g(right)
+
+        if (
+            np.isfinite(fL)
+            and np.isfinite(fR)
+            and fL * fR <= 0.0
+        ):
+
             try:
-                root = brentq(g, left, right, maxiter=200)
-                if np.isfinite(root) and (amin <= root <= amax):
+
+                root = brentq(
+                    g,
+                    left,
+                    right,
+                    maxiter=200
+                )
+
+                if (
+                    np.isfinite(root)
+                    and amin <= root <= amax
+                ):
                     return float(root)
-            except Exception:
+
+            except (ValueError, RuntimeError):
                 pass
 
-        # ---------- 3) GLOBAL bracket search (log-spaced, resolves youngest root) ----------
-        # Log grid has tons of resolution near 0 and still covers to amax.
-        # Include 0 explicitly.
-        grid = np.r_[0.0, np.logspace(-12, np.log10(amax), 600)]
-        vals = np.array([g(t) for t in grid], dtype=float)
+        # ============================================================
+        # 3. GLOBAL FALLBACK
+        # ============================================================
+
+        # linear + logarithmic sampling gives resolution close to zero
+        # without relying entirely on zero itself
+
+        positive_min = max(
+            1e-8,
+            amax * 1e-12
+        )
+
+        grid = np.r_[
+            0.0,
+            np.logspace(
+                np.log10(positive_min),
+                np.log10(amax),
+                400
+            )
+        ]
+
+        vals = np.array(
+            [g(t) for t in grid],
+            dtype=float
+        )
 
         ok = np.isfinite(vals)
-        grid2 = grid[ok]
-        vals2 = vals[ok]
-        if vals2.size >= 2:
-            s = np.sign(vals2)
-            crossings = np.where(s[:-1] * s[1:] <= 0.0)[0]
-            if crossings.size > 0:
-                k = int(crossings[0])
-                aL = float(grid2[k])
-                aR = float(grid2[k + 1])
-                # ensure non-degenerate interval
-                if aR == aL:
-                    aR = min(amax, aL + max(1e-12, 1e-12 * amax))
-                try:
-                    root = brentq(g, aL, aR, maxiter=200)
-                    if np.isfinite(root) and (amin <= root <= amax):
-                        return float(root)
-                except Exception:
-                    pass
+
+        grid = grid[ok]
+        vals = vals[ok]
+
+        if vals.size < 2:
+            return np.nan
+
+        # look for sign changes
+        crossings = np.where(
+            vals[:-1] * vals[1:] <= 0.0
+        )[0]
+
+        if crossings.size == 0:
+            return np.nan
+
+        # ------------------------------------------------------------
+        # Prefer the root nearest the previous age estimate
+        # ------------------------------------------------------------
+
+        if np.isfinite(a0):
+
+            mids = 0.5 * (
+                grid[crossings]
+                + grid[crossings + 1]
+            )
+
+            k = crossings[
+                np.argmin(np.abs(mids - a0))
+            ]
+
+        else:
+
+            k = crossings[0]
+
+        left = grid[k]
+        right = grid[k + 1]
+
+        try:
+
+            root = brentq(
+                g,
+                left,
+                right,
+                maxiter=200
+            )
+
+        except (ValueError, RuntimeError):
+
+            return np.nan
+
+        if (
+            np.isfinite(root)
+            and amin <= root <= amax
+        ):
+            return float(root)
 
         return np.nan
-        
-    def ages_vector(self, Th_initial, U234, Th230, Th232, age_guess=None):
+            
+    def ages_vector(
+        self,
+        Th_initial,
+        U234,
+        Th230,
+        Th232,
+        age_guess=None
+    ):
+
         N = len(Th_initial)
-        ages = np.empty(N, dtype=float)
-        if age_guess is None or np.isscalar(age_guess):
-            guess = np.full(N, 0.5 * self.Age_Maximum, float)
+
+        ages = np.empty(
+            N,
+            dtype=float
+        )
+
+        if age_guess is None:
+
+            guess = np.linspace(
+                0.05,
+                0.95,
+                N
+            ) * self.Age_Maximum
+
         else:
-            guess = np.asarray(age_guess, float)
+
+            guess = np.asarray(
+                age_guess,
+                float
+            )
+
             if guess.shape[0] != N:
-                raise ValueError("age_guess must be length N")
-        amax = float(self.Age_Solve_Max)
+
+                raise ValueError(
+                    "age_guess must be length N"
+                )
+
         for i in range(N):
-            ages[i] = self._solve_age_single(Th_initial[i], Th232[i], U234[i], Th230[i],
-                                             a0=guess[i], amax=amax)
+
+            ages[i] = self._solve_age_single(
+                Th_initial[i],
+                Th232[i],
+                U234[i],
+                Th230[i],
+                a0=guess[i],
+                amax=self.Age_Maximum
+            )
+
         return ages
 
     # ============================================================
@@ -577,7 +783,7 @@ class IBIS_MCMC:
                     Th230=Th230[idx],
                     # Current age is an excellent starting guess
                     a0=ages_prev[idx],
-                    amax=self.Age_Solve_Max,
+                    amax=self.Age_Maximum,
                 )
 
         except Exception:
@@ -588,7 +794,11 @@ class IBIS_MCMC:
         # CHECK AGES
         # ========================================================
 
-        if (np.any(~np.isfinite(ages))  or np.any(ages < 0.0)):
+        if (
+            np.any(~np.isfinite(ages))
+            or np.any(ages < self.Age_Minimum)
+            or np.any(ages > self.Age_Maximum)
+        ):
             return -np.inf, ages
 
         # ========================================================
@@ -640,12 +850,24 @@ class IBIS_MCMC:
         """
         Generate a valid starting state in standardized z-space.
         """
-        age_guess = (np.linspace(0.05,0.95,self.N_meas) * self.Age_Maximum)
+        age_range = (
+            self.Age_Maximum
+            - self.Age_Minimum
+        )
 
+        init_ages_guess = (
+            self.Age_Minimum
+            + np.linspace(
+                0.05,
+                0.95,
+                 self.N_meas
+            )
+            * age_range
+        )
         # First try the exact centre of all priors
         z = np.zeros((self.N_meas, 4),dtype=float,)
 
-        logp, ages = self.log_posterior_z(z, ages_prev=age_guess)
+        logp, ages = self.log_posterior_z(z, ages_prev=init_ages_guess)
 
         if ( np.isfinite(logp) and np.all(np.isfinite(ages))):
             # give each chain a small independent perturbation
@@ -672,7 +894,7 @@ class IBIS_MCMC:
             )
 
             logp, ages = self.log_posterior_z(  z,
-                ages_prev=age_guess)
+                ages_prev=init_ages_guess)
 
             if (np.isfinite(logp)
                 and np.all(np.isfinite(ages))
@@ -685,16 +907,44 @@ class IBIS_MCMC:
     # ============================================================
     # MCMC PROPOSAL IN z-space
     # ============================================================
-    def propose_sample(self, z, index, rng, proposal_scale):
-        """
-        Move all four latent parameters for one sample together.
-        """
+    def propose_sample(
+        self,
+        z,
+        index,
+        rng,
+        proposal_scale,
+        block_probability=0.20
+    ):
+
         z_prop = z.copy()
-        z_prop[index, :] += rng.normal(
-            0.0,
-            proposal_scale,
-            size=4,
-        )
+
+        # ------------------------------------------------------------
+        # Occasionally move all four together
+        # ------------------------------------------------------------
+
+        if rng.random() < block_probability:
+
+            z_prop[index, :] += rng.normal(
+                0.0,
+                proposal_scale,
+                size=4
+            )
+
+        # ------------------------------------------------------------
+        # Usually move one parameter only
+        # ------------------------------------------------------------
+
+        else:
+
+            parameter = int(
+                rng.integers(0, 4)
+            )
+
+            z_prop[index, parameter] += rng.normal(
+                0.0,
+                proposal_scale
+            )
+
         return z_prop
 
     # ---------------- I/O ----------------
@@ -721,7 +971,7 @@ class IBIS_MCMC:
 
         start_time = time.time()
 
-        rng = np.random.default_rng(seed)
+        rng = np.random.default_rng(seed + int(chain_id))
 
         Ndata = self.N_meas
 
@@ -770,7 +1020,7 @@ class IBIS_MCMC:
         total_accepted = 0
 
         # Tune every 2000 proposals during burn-in
-        adapt_interval = 2000
+        adapt_interval = self.meta.get("adaption_interval", 500)
 
         # ========================================================
         # PROGRESS BAR
@@ -838,14 +1088,30 @@ class IBIS_MCMC:
 
                 # Acceptance too low:
                 # make proposals smaller
-                if rate < 0.20:
-                    proposal_scale *= 0.90
-                # Acceptance too high:
-                # make proposals larger
+                if rate < 0.10:
+
+                    proposal_scale *= 0.50
+
+                elif rate < 0.20:
+
+                    proposal_scale *= 0.80
+
+                elif rate > 0.60:
+
+                    proposal_scale *= 1.50
+
                 elif rate > 0.40:
-                    proposal_scale *= 1.10
+
+                    proposal_scale *= 1.20
+
+
                 proposal_scale = float(
-                    np.clip( proposal_scale, 0.01, 2.0))
+                    np.clip(
+                        proposal_scale,
+                        0.01,
+                        2.0
+                    )
+)
 
                 if ( chain_id == 0  and self.print_diagnostics):
                     print(f"\nBurn-in iteration {i}: "
@@ -994,13 +1260,14 @@ class IBIS_MCMC:
 
             return self.MCMC(z, self.iterations, chain_id, seed)
 
-        results = Parallel(n_jobs=-1)(
+        results = Parallel(n_jobs=self.n_jobs)(
                         delayed(run_chain)(
                             all_z[chain_id],
                             chain_id,
                             chain_seeds[chain_id],
                     )
             for chain_id in range(self.n_chains))
+            
         self.Chain_Results = results
         return self.Chain_Results
 
@@ -1105,7 +1372,302 @@ class IBIS_MCMC:
         chains = [result_dicts[i-1][f"z7_{i}"] for i in range(1, self.n_chains + 1)]
         all_draws = np.vstack(chains)
         return self._summarize_draws(all_draws, center="median", lower=0.0)
+        
 
+    def _stack_posterior_output(self, output_number):
+        """
+        Stack one stored posterior quantity across all chains.
+
+        output_number:
+            1 = age
+            2 = initial Th230/Th232
+            3 = measured U234/U238
+            4 = measured Th232/U238
+            5 = measured Th230/U238
+            6 = log posterior
+            7 = initial U234/U238
+        """
+
+        result_dicts = self.Get_Results_Dictionary()
+
+        chains = [
+            result_dicts[i - 1][f"z{output_number}_{i}"]
+            for i in range(1, self.n_chains + 1)
+        ]
+
+        return np.vstack(chains)
+
+
+    def Get_Parameter_Covariances(self):
+        """
+        Calculate posterior covariance and correlation matrices.
+
+        Returns
+        -------
+        results : dict
+
+            results["within_horizon_covariance"]
+                List of one covariance DataFrame per horizon.
+
+            results["within_horizon_correlation"]
+                List of one correlation DataFrame per horizon.
+
+            results["full_covariance"]
+                Full joint posterior covariance matrix including
+                parameters from every horizon.
+
+            results["full_correlation"]
+                Full joint posterior correlation matrix.
+        """
+
+        # ============================================================
+        # Collect posterior draws
+        # ============================================================
+
+        draws = {
+            "age": self._stack_posterior_output(1),
+            "Th0": self._stack_posterior_output(2),
+            "U234_238": self._stack_posterior_output(3),
+            "Th232_238": self._stack_posterior_output(4),
+            "Th230_238": self._stack_posterior_output(5),
+            "U234_238_initial": self._stack_posterior_output(7),
+        }
+
+        parameter_names = list(draws.keys())
+
+        # Number of horizons
+        N = self.N_meas
+
+        # ============================================================
+        # 1. Covariance within each individual horizon
+        # ============================================================
+
+        horizon_covariances = []
+        horizon_correlations = []
+
+        for h in range(N):
+
+            X = np.column_stack([
+                draws[name][:, h]
+                for name in parameter_names
+            ])
+
+            # remove pathological/non-finite draws if present
+            good = np.isfinite(X).all(axis=1)
+            X = X[good]
+
+            if X.shape[0] < 2:
+                raise ValueError(
+                    f"Not enough finite posterior draws "
+                    f"for horizon {h + 1}"
+                )
+
+            cov = np.cov(
+                X,
+                rowvar=False,
+                ddof=1
+            )
+
+            corr = np.corrcoef(
+                X,
+                rowvar=False
+            )
+
+            cov_df = pd.DataFrame(
+                cov,
+                index=parameter_names,
+                columns=parameter_names,
+            )
+
+            corr_df = pd.DataFrame(
+                corr,
+                index=parameter_names,
+                columns=parameter_names,
+            )
+
+            horizon_covariances.append(cov_df)
+            horizon_correlations.append(corr_df)
+
+        # ============================================================
+        # 2. FULL covariance between EVERYTHING
+        #
+        # Ordering is:
+        #
+        # H001_age
+        # H001_Th0
+        # H001_U234_238
+        # ...
+        # H002_age
+        # H002_Th0
+        # ...
+        # ============================================================
+
+        full_columns = []
+        full_labels = []
+
+        for h in range(N):
+
+            for name in parameter_names:
+
+                full_columns.append(
+                    draws[name][:, h]
+                )
+
+                full_labels.append(
+                    f"H{h + 1:03d}_{name}"
+                )
+
+        X_full = np.column_stack(full_columns)
+
+        good = np.isfinite(X_full).all(axis=1)
+        X_full = X_full[good]
+
+        if X_full.shape[0] < 2:
+            raise ValueError(
+                "Not enough finite posterior draws "
+                "to calculate full covariance."
+            )
+
+        full_cov = np.cov(
+            X_full,
+            rowvar=False,
+            ddof=1
+        )
+
+        full_corr = np.corrcoef(
+            X_full,
+            rowvar=False
+        )
+
+        full_cov_df = pd.DataFrame(
+            full_cov,
+            index=full_labels,
+            columns=full_labels,
+        )
+
+        full_corr_df = pd.DataFrame(
+            full_corr,
+            index=full_labels,
+            columns=full_labels,
+        )
+
+        return {
+            "within_horizon_covariance":
+                horizon_covariances,
+
+            "within_horizon_correlation":
+                horizon_correlations,
+
+            "full_covariance":
+                full_cov_df,
+
+            "full_correlation":
+                full_corr_df,
+        }
+
+
+    def Save_Parameter_Covariances(self):
+
+        results = self.Get_Parameter_Covariances()
+
+        # ============================================================
+        # Save full joint matrices
+        # ============================================================
+
+        cov_path = (
+            self.save_dir
+            / f"{self.sample_name}_full_covariance.csv"
+        )
+
+        corr_path = (
+            self.save_dir
+            / f"{self.sample_name}_full_correlation.csv"
+        )
+
+        results["full_covariance"].to_csv(cov_path)
+
+        results["full_correlation"].to_csv(corr_path)
+
+        # ============================================================
+        # Save within-horizon covariance/correlation
+        # as tidy long-form tables
+        # ============================================================
+
+        cov_rows = []
+        corr_rows = []
+
+        parameter_names = (
+            results[
+                "within_horizon_covariance"
+            ][0].columns
+        )
+
+        for h in range(self.N_meas):
+
+            cov = results[
+                "within_horizon_covariance"
+            ][h]
+
+            corr = results[
+                "within_horizon_correlation"
+            ][h]
+
+            depth = self.depths[h]
+
+            for p1 in parameter_names:
+
+                for p2 in parameter_names:
+
+                    cov_rows.append({
+                        "horizon": h + 1,
+                        "depth": depth,
+                        "parameter_1": p1,
+                        "parameter_2": p2,
+                        "covariance": cov.loc[p1, p2],
+                    })
+
+                    corr_rows.append({
+                        "horizon": h + 1,
+                        "depth": depth,
+                        "parameter_1": p1,
+                        "parameter_2": p2,
+                        "correlation": corr.loc[p1, p2],
+                    })
+
+        cov_long = pd.DataFrame(cov_rows)
+
+        corr_long = pd.DataFrame(corr_rows)
+
+        cov_long_path = (
+            self.save_dir
+            / f"{self.sample_name}_within_horizon_covariance.csv"
+        )
+
+        corr_long_path = (
+            self.save_dir
+            / f"{self.sample_name}_within_horizon_correlation.csv"
+        )
+
+        cov_long.to_csv(
+            cov_long_path,
+            index=False
+        )
+
+        corr_long.to_csv(
+            corr_long_path,
+            index=False
+        )
+
+        print(
+            f"Parameter covariance saved to:\n"
+            f"  {cov_path}\n"
+            f"  {cov_long_path}\n\n"
+            f"Parameter correlation saved to:\n"
+            f"  {corr_path}\n"
+            f"  {corr_long_path}"
+        )
+
+        return results
 
     # Chain diagnostics
     def Chain_Diagnostic_Vector(self, param = 'z1'):

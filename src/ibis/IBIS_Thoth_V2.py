@@ -12,6 +12,7 @@ from scipy.optimize import brentq, minimize, minimize_scalar
 from sklearn.neighbors import KernelDensity
 from sklearn.model_selection import GridSearchCV
 from pathlib import Path
+from scipy.integrate import trapezoid
 
 """
 There is an issue with the np.trapz, I need to update this code. Will fix soon. 14/8/2026.
@@ -32,10 +33,7 @@ class ThoriumPrior1D:
             if rng is not None
             else np.random.default_rng()
         )
-        try:
-            self.trapezoid = np.trapezoid   # NumPy verison control help
-        except AttributeError:
-            self.trapezoid = np.trapz       # NumPy verison control help
+        self.trapezoid = trapezoid
 
         Z = self.trapezoid(
             self.pdf_grid,
@@ -242,8 +240,8 @@ class IBIS_Thoth_Robust:
         depth_tol=0.0,  # 0 => no rounding
 
         # boutique sampler
-        fraction_det=0.2,
-        r02_clip_lo=0.001,
+        fraction_det=0.1,
+        r02_clip_lo=0.05,
         r02_clip_hi=1000.0,
 
         # r02 max bound from data (IMPORTANT)
@@ -273,7 +271,7 @@ class IBIS_Thoth_Robust:
         pair_tau_layers=2.0, pair_alpha=1.0, min_pair_weight=1e-6,
 
         # prior mixture
-        global_mass=0.7,n_samples_global=4000, n_samples_layer=2500,
+        global_mass=0.8,n_samples_global=4000, n_samples_layer=2500,
 
         # KDE fit controls
         bw_grid=None, cv=5, bw_subsample=3000,
@@ -1002,7 +1000,7 @@ class IBIS_Thoth_Robust:
             KernelDensity(kernel="gaussian"),
             {"bandwidth": bw_grid},
             cv=cv_eff,
-            n_jobs=-1,
+            n_jobs=self.meta.get("n_jobs", 1),
         )
         gs.fit(x_cv)
         return float(gs.best_params_["bandwidth"])

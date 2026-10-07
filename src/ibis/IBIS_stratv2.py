@@ -31,29 +31,15 @@ class IBIS_Strat2:
 
     def __init__(
         self,
-        U_series_ages,
-        U_series_ages_err_low,
-        U_series_ages_err_high,
-        data,
-        sample_name="SAMPLE_NAME",
-        Start_from_pickles=False,
-        n_chains=3,
-        iterations=30000,
-        burn_in=10000,
-        thin=10,
-        resolution=100,
-        top_age=None,
-        top_age_err=None,
-        top_age_depth=None,
-        model_top_depth=None,
-        model_bottom_depth=None,
-        pad_frac=0.10,
-        sigma_extra=0.0,
-        smoothness_mu= 1e-5,
-        smoothness_sigma = 8,
-        save_dir=None
-            ):
+        U_series_ages, U_series_ages_err_low, U_series_ages_err_high,
+        data, sample_name="SAMPLE_NAME",
+        Start_from_pickles=False, n_chains=3, iterations=30000, burn_in=10000, thin=10, resolution=100,
+        top_age=None, top_age_err=None, top_age_depth=None,
+        model_top_depth=None, model_bottom_depth=None,
+        pad_frac=0.10, sigma_extra=0.0, smoothness_mu= 1e-5, smoothness_sigma = 8,
+        save_dir=None, n_jobs = 1):
         self.sample_name = str(sample_name)
+        self.n_jobs = n_jobs
         self.Start_from_pickles = bool(Start_from_pickles)
         self.n_chains = int(n_chains)
         self.iterations = int(iterations)
@@ -100,17 +86,49 @@ class IBIS_Strat2:
         # ---------------------------
         # Optional top age anchor
         # ---------------------------
+
+        self.has_top_age = top_age is not None
+
         if top_age is not None:
             if top_age_err is None:
-                raise ValueError("If top_age is provided, top_age_err must also be provided.")
-            if top_age_depth is None:
-                raise ValueError("If top_age is provided, top_age_depth must also be provided.")
+                raise ValueError(
+                    "If top_age is provided, top_age_err must also be provided."
+                )
 
-            self.u_ages = np.insert(self.u_ages, 0, float(top_age))
-            self.low_age_err_raw = np.insert(self.low_age_err_raw, 0, float(top_age_err) / 2.0)
-            self.high_age_err_raw = np.insert(self.high_age_err_raw, 0, float(top_age_err) / 2.0)
-            self.Depths = np.insert(self.Depths, 0, float(top_age_depth))
-            self.Depths_err = np.insert(self.Depths_err, 0, 1e-6)
+            if top_age_depth is None:
+                raise ValueError(
+                    "If top_age is provided, top_age_depth must also be provided."
+                )
+
+            self.u_ages = np.insert(
+                self.u_ages,
+                0,
+                float(top_age)
+            )
+
+            self.low_age_err_raw = np.insert(
+                self.low_age_err_raw,
+                0,
+                float(top_age_err) / 2.0
+            )
+
+            self.high_age_err_raw = np.insert(
+                self.high_age_err_raw,
+                0,
+                float(top_age_err) / 2.0
+            )
+
+            self.Depths = np.insert(
+                self.Depths,
+                0,
+                float(top_age_depth)
+            )
+
+            self.Depths_err = np.insert(
+                self.Depths_err,
+                0,
+                1e-6
+    )
 
         # ---------------------------
         # Safety floors
@@ -133,20 +151,45 @@ class IBIS_Strat2:
         # ---------------------------
         # Fixed latent depth grid
         # ---------------------------
+
         obs_top = float(np.min(self.Depths))
         obs_bottom = float(np.max(self.Depths))
         obs_span = max(obs_bottom - obs_top, 1e-9)
 
-        default_top = max(0.0, obs_top - self.pad_frac * obs_span)
+        # Bottom can still have ordinary padding
         default_bottom = obs_bottom + self.pad_frac * obs_span
 
-        self.model_top_depth = float(default_top if model_top_depth is None else model_top_depth)
-        self.model_bottom_depth = float(default_bottom if model_bottom_depth is None else model_bottom_depth)
+
+        # ============================================================
+        # TOP OF MODEL
+        # ============================================================
+        if model_top_depth is not None:
+            default_top = float(model_top_depth)
+
+        elif self.has_top_age:
+            default_top = obs_top
+
+        else:
+            default_top = obs_top
+
+
+        self.model_top_depth = float(default_top)
+        self.model_bottom_depth = float(
+            default_bottom if model_bottom_depth is None
+            else model_bottom_depth
+        )
 
         if self.model_top_depth >= self.model_bottom_depth:
-            raise ValueError("model_bottom_depth must be greater than model_top_depth.")
+            raise ValueError(
+                "model_bottom_depth must be greater than model_top_depth."
+            )
 
-        self.depth_grid = np.linspace(self.model_top_depth, self.model_bottom_depth, self.resolution)
+
+        self.depth_grid = np.linspace(
+            self.model_top_depth,
+            self.model_bottom_depth,
+            self.resolution
+        )
 
         # ---------------------------
         # Age bounds
@@ -154,7 +197,7 @@ class IBIS_Strat2:
         self.age_floor = 0.0
         i_bot = int(np.argmax(self.Depths))
         sig_bot = 0.5 * (self.low_age_err[i_bot] + self.high_age_err[i_bot])
-        self.age_ceiling = float(self.u_ages[i_bot] + 5.0 * sig_bot)
+        self.age_ceiling = float((self.u_ages + 3.0 * self.high_age_err).max())
 
         # Proposal weights
         self.p_local = 0.30
@@ -171,13 +214,125 @@ class IBIS_Strat2:
         for i in range(1, age.size):
             age[i] = max(age[i], age[i - 1] + min_increment)
         return age
+        
+    def _weighted_isotonic(self, y, sigma):
+        """
+        Weighted isotonic regression using PAVA.
+
+        Finds the closest non-decreasing sequence to y,
+        weighted by 1/sigma^2.
+        """
+
+        y = np.asarray(y, dtype=float)
+        sigma = np.maximum(np.asarray(sigma, dtype=float), 1e-12)
+
+        weights = 1.0 / sigma**2
+
+        # Start with each observation as its own block
+        values = list(y.copy())
+        w = list(weights.copy())
+
+        starts = list(range(len(y)))
+        ends = list(range(len(y)))
+
+        i = 0
+
+        while i < len(values) - 1:
+
+            # monotonic already
+            if values[i] <= values[i + 1]:
+                i += 1
+                continue
+
+            # Pool adjacent violating blocks
+            new_weight = w[i] + w[i + 1]
+
+            new_value = (
+                w[i] * values[i]
+                + w[i + 1] * values[i + 1]
+            ) / new_weight
+
+            values[i:i + 2] = [new_value]
+            w[i:i + 2] = [new_weight]
+
+            starts[i:i + 2] = [starts[i]]
+            ends[i:i + 2] = [ends[i + 1]]
+
+            # Go backwards in case pooling created another violation
+            if i > 0:
+                i -= 1
+
+        # Expand blocks back to one value per observation
+        fitted = np.empty(len(y), dtype=float)
+
+        for value, start, end in zip(values, starts, ends):
+            fitted[start:end + 1] = value
+
+        return fitted
 
     def _initial_model(self):
         """
-        Start from observed age-depth shape.
+        Construct a sensible monotonic initial age-depth model.
+
+        Uses uncertainty-weighted isotonic regression rather than
+        forcing the raw observed ages to monotonicity.
         """
-        age0 = np.interp(self.depth_grid, self.Depths, self.u_ages)
-        return self._project_monotone(age0)
+
+        # ---------------------------------------------------------
+        # Start with approximately symmetric uncertainty
+        # ---------------------------------------------------------
+
+        sigma = 0.5 * (
+            self.low_age_err
+            + self.high_age_err
+        )
+
+        # ---------------------------------------------------------
+        # Weighted monotonic fit
+        # ---------------------------------------------------------
+
+        fitted = self._weighted_isotonic(
+            self.u_ages,
+            sigma
+        )
+
+        # ---------------------------------------------------------
+        # Refine for asymmetric uncertainties
+        #
+        # If fitted age is below observed age -> lower uncertainty
+        # If fitted age is above observed age -> upper uncertainty
+        # ---------------------------------------------------------
+
+        for _ in range(4):
+
+            sigma = np.where(
+                fitted < self.u_ages,
+                self.low_age_err,
+                self.high_age_err
+            )
+
+            fitted = self._weighted_isotonic(
+                self.u_ages,
+                sigma
+            )
+
+        # ---------------------------------------------------------
+        # Interpolate the monotonic observations onto latent grid
+        # ---------------------------------------------------------
+
+        age0 = np.interp(
+            self.depth_grid,
+            self.Depths,
+            fitted
+        )
+
+        # Model requires STRICT monotonicity rather than >=
+        age0 = self._project_monotone(
+            age0,
+            min_increment=1e-8
+        )
+
+        return age0
 
     def _interp_model_to_obs(self, Age_Model):
         return np.interp(self.Depths, self.depth_grid, Age_Model)
@@ -451,7 +606,7 @@ class IBIS_Strat2:
         cur_post = self.Log_Posterior(Age_Model, Smooth_Model)
 
         if not np.isfinite(cur_post):
-            raise ValueError("Initial Age_Model has non-finite posterior.")
+            raise ValueError("Initial Age_Model  non-finite posterior.")
 
         tuning_file = self._tuning_path(chain_id)
         if tuning_file.exists() and self.Start_from_pickles:
@@ -568,7 +723,7 @@ class IBIS_Strat2:
         def run_chain(theta, chain_id):
             return self.MCMC(theta, total_iterations, chain_id)
 
-        results = Parallel(n_jobs=-1)(
+        results = Parallel(n_jobs=self.n_jobs)(
             delayed(run_chain)(theta, chain_id)
             for theta, chain_id in zip(starts[:self.n_chains], range(self.n_chains))
         )
@@ -623,6 +778,14 @@ class IBIS_Strat2:
         draws = self._stack_draws("age")
         low, med, high = self._safe_percentiles(draws, qs=(2.5, 50, 97.5))
         return low, high, med
+        
+    def Get_Depth_Model(self):
+        """Return the fixed depth-grid coordinates."""
+        return (
+            self.depth_grid.copy(),
+            self.depth_grid.copy(),
+            self.depth_grid.copy(),
+        )
 
     def Get_Growth_Model(self):
         draws = self._stack_draws("growth")
@@ -709,7 +872,7 @@ class IBIS_Strat2:
         fig, ax = plt.subplots(1, 1, figsize = (5,5))
         ax.hist(draws, bins = 50,
                density = True);
-        ax.set_xlabel('Smoothness ($\gamma$)')
+        ax.set_xlabel(r'Smoothness ($\gamma$)')
         ax.set_ylabel('Density')
         return fig, ax
 
@@ -962,6 +1125,8 @@ class IBIS_Strat2:
         df['Age 95% credible evelope high'] = out['q975']
         df['Age 50% credible evelope low'] = out['q25']
         df['Age 50% credible evelope high'] = out['q75']
-        
+        output_path = self.save_dir / f"{self.sample_name}_Age_Depth_Model.csv"
+        df.to_csv(output_path, index=False)
+        print(f"Saved Age-Depth model to: {output_path}")
         return df
 

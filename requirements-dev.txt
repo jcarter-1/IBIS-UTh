@@ -1,0 +1,3 @@
+# Run from the project root: python -m pip install -r requirements-dev.txt
+# The dev extra adds package building and release validation tools.
+.[dev]

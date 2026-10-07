@@ -1,0 +1,3 @@
+# Run from the project root: python -m pip install -r requirements-notebook.txt
+# The notebook extra includes the core dependencies automatically.
+.[notebook]

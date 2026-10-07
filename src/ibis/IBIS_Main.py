@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from scipy.stats import gaussian_kde, lognorm
 from scipy.interpolate import interp1d
-
+from scipy.integrate import trapezoid
 from datetime import datetime
 from pathlib import Path
 
@@ -82,23 +82,26 @@ class IBIS:
                 method = 'thoth',
                 strat_resolution = 100,
                  diction_meta = None,
-                 save_dir = None,
-                 data_uncertainty_level = None):
-                
-        self.method = method
-        self.filepath = filepath
-        self.strat_resolution = strat_resolution
-        # Configure the Data and uncertainty level
-        self.data_uncertainty_level = data_uncertainty_level
-        self.config = IBIS_Configuration.IBIS_Configuration_Class(self.filepath,
-        data_uncertainty_level = self.data_uncertainty_level)
-        # Get refined dataset
-        self.df_reduced = self.config.Get_Measured_Ratios()
-        self.quick_data_check()
+                 save_dir = None, n_jobs=None):
+        
         # Sample
         self.sample_name = sample_name
         # Meta Data
         self.meta = dict(diction_meta) if diction_meta is not None else {}
+        self.n_jobs = self.meta.get("n_jobs", 1) if n_jobs is None else n_jobs
+        self.meta["n_jobs"] = self.n_jobs
+        self.thor_kde = None
+        self.method = method
+        self.filepath = filepath
+        self.strat_resolution = strat_resolution
+        # Configure the Data and uncertainty level
+
+        self.config = IBIS_Configuration.IBIS_Configuration_Class(self.filepath, self.meta)
+       
+        # Get refined dataset
+        self.df_reduced = self.config.Get_Measured_Ratios()
+        self.quick_data_check()
+
         # Kdes_filepath
         self.kdes_name = self.sample_name + '_prior'
         # Bounds_Filename
@@ -132,6 +135,8 @@ class IBIS:
         self.Start_from_pickles = Start_from_pickles
         # Create a results folder
         self.rng = np.random.default_rng(1234)
+        
+        self.trapezoid = trapezoid
 
         # Check for Hiatus and Top Stal Collection Age
         self.Top_Age_Stal = Top_Age_Stal
@@ -198,59 +203,45 @@ class IBIS:
             print(self.IBIS_BIRD)
             
     def quick_data_check(self, tiny=1e-20):
-        """
-        Check self.df_reduced for:
-        - NaN
-        - inf / -inf
-        - exact zeros
-        - extremely small absolute values, e.g. abs(x) <= 1e-20
-        across all numeric columns.
-        """
-
+        """Validate measurements while allowing labels and zero depths."""
         if self.df_reduced is None:
-            raise ValueError("self.df_reduced has not been created yet.")
+            raise ValueError("Input data have not been created.")
 
         if self.df_reduced.empty:
-            raise ValueError("self.df_reduced is empty.")
+            raise ValueError("Input data are empty.")
 
-        df = self.df_reduced.apply(pd.to_numeric, errors="coerce")
+        ratio_cols = [
+            "Th230_238U_ratios",
+            "Th232_238U_ratios",
+            "U234_U238_ratios",
+        ]
+        err_cols = [c + "_err" for c in ratio_cols]
+        cols = ratio_cols + err_cols + ["Depths", "Depths_err"]
 
-        nan_mask = df.isna()
-        inf_mask = np.isinf(df)
-        zero_mask = df.eq(0)
-        tiny_mask = df.abs().le(tiny)
+        missing = [c for c in cols if c not in self.df_reduced]
+        if missing:
+            raise ValueError(f"Missing required columns: {missing}")
 
-        if nan_mask.any().any():
-            bad_rows = df.index[nan_mask.any(axis=1)].tolist()
-            bad_cols = df.columns[nan_mask.any(axis=0)].tolist()
+        df = self.df_reduced[cols].apply(pd.to_numeric, errors="coerce")
+
+        invalid = ~np.isfinite(df)
+        if invalid.any().any():
+            rows = df.index[invalid.any(axis=1)].tolist()
             raise ValueError(
-                f"NaN values found.\nRows: {bad_rows}\nColumns: {bad_cols}"
+                f"Non-numeric or non-finite measurements in rows: {rows}"
             )
 
-        if inf_mask.any().any():
-            bad_rows = df.index[inf_mask.any(axis=1)].tolist()
-            bad_cols = df.columns[inf_mask.any(axis=0)].tolist()
+        nonpositive = df[ratio_cols + err_cols].le(tiny)
+        if nonpositive.any().any():
             raise ValueError(
-                f"Infinite values found.\nRows: {bad_rows}\nColumns: {bad_cols}"
+                "Ratios and their 1-sigma uncertainties must be positive."
             )
 
-        if zero_mask.any().any():
-            bad_rows = df.index[zero_mask.any(axis=1)].tolist()
-            bad_cols = df.columns[zero_mask.any(axis=0)].tolist()
-            raise ValueError(
-                f"Zero values found.\nRows: {bad_rows}\nColumns: {bad_cols}"
-            )
-
-        if tiny_mask.any().any():
-            bad_rows = df.index[tiny_mask.any(axis=1)].tolist()
-            bad_cols = df.columns[tiny_mask.any(axis=0)].tolist()
-            raise ValueError(
-                f"Extremely small values found with abs(x) <= {tiny}.\n"
-                f"Rows: {bad_rows}\nColumns: {bad_cols}"
-            )
+        if df["Depths_err"].lt(0).any():
+            raise ValueError("Depth uncertainties cannot be negative.")
 
         return True
-    
+        
         
 
     def Get_Top_Age(self): 
@@ -416,7 +407,7 @@ class IBIS:
         x_grid = np.linspace(float(x_min), float(x_max), int(grid_points))
         pdf = self._thor_pdf(x_grid)
 
-        area = np.trapz(pdf, x_grid)
+        area = self.trapezoid(pdf, x_grid)
         if not np.isfinite(area) or area <= 0:
             raise ValueError("Could not build thorium inverse CDF: PDF integrates to zero or invalid value.")
 
@@ -542,11 +533,14 @@ class IBIS:
                                               Start_from_pickles = self.Start_from_pickles,
                                               method = self.method,
                                               save_dir = self.save_dir,
-                                              print_diagnostics = self.meta.get('print_diagnostics', False))
+                                              print_diagnostics = self.meta.get('print_diagnostics', False),
+                                              meta=self.meta,
+                                              n_jobs=self.n_jobs)
                                               
-        return self.Ibis_Chains.Initial_Guesses_for_Model()
+        return [self.Ibis_Chains.Initial_Guess_z(np.random.default_rng(self.Ibis_Chains.seed + i))for i in range(self.n_chains)]
                 
-    def Run_MCMC(self): 
+                
+    def Run_MCMC(self):
         if not self.set_up_the_chain: 
             self.thor_kde = self.Set_Up_MCMC()
 
@@ -561,15 +555,19 @@ class IBIS:
                                               Start_from_pickles = self.Start_from_pickles,
                                               method = self.method,
                                               save_dir = self.save_dir,
-                                              print_diagnostics = self.meta.get('print_diagnostics', False))
+                                              print_diagnostics = self.meta.get('print_diagnostics', False),
+                                              meta=self.meta,
+                                              n_jobs=self.n_jobs)
 
         self.Ibis_Chains.Run_MCMC();
         self.Chain_run = True
 
-    def Get_MCMC_Results(self): 
+    def Get_MCMC_Results(self):
+        if not self.Chain_run:
+            self.Run_MCMC()
 
-        self.Run_MCMC()
         self.results_dicts = self.Ibis_Chains.Get_Results_Dictionary()
+        return self.results_dicts
 
     def Get_Post_Vals(self): 
         if not self.Chain_run: 
@@ -612,42 +610,51 @@ class IBIS:
 
         return U0_c,  (U0_lo68,  U0_hi68),  (U0_lo95,  U0_hi95),  U0_sigma
 
-    def Plot_U_ages_and_Age_model(self, AGE_MODEL = True): 
-        self.model_ages, self.model_ages_err, self.model_depths, self.model_depths_err = self.Model_Ages_Depths()
-        self.U_series_ages, self.U_series_ages_err  = self.Model_U_ages()
-
-        
-        fig, ax = plt.subplots(1,1, figsize = (5,7))
-        ax.errorbar(x = self.U_series_ages,
-            xerr = self.U_series_ages_err[0], 
-                y = self.df_reduced['Depths'].values,
-                fmt = 'o',
-               label = 'U Series\nModel', 
-               alpha = 1, 
-                markerfacecolor = 'dodgerblue',
-            ecolor = 'k',
-           markersize = 10, 
-           markeredgecolor = 'k')
-
+    def Plot_U_ages_and_Age_model(self, AGE_MODEL=True):
+        ages, bounds68, _, _ = self.Model_U_ages()
+    
+        xerr = np.vstack((
+            np.maximum(ages - bounds68[0], 0.0),
+            np.maximum(bounds68[1] - ages, 0.0),
+        ))
+    
+        fig, ax = plt.subplots(1, 1, figsize=(5, 7))
+    
+        ax.errorbar(
+            ages,
+            self.df_reduced["Depths"].values,
+            xerr=xerr,
+            fmt="o",
+            label="U-series model",
+            markerfacecolor="dodgerblue",
+            ecolor="k",
+            markersize=10,
+            markeredgecolor="k",
+        )
+    
         if AGE_MODEL:
-        
-            ax.fill_betweenx(self.model_depths, self.model_ages - self.model_ages_err[0], 
-                       self.model_ages_err[1] + self.model_ages,
-                       label = 'Age-Depth\nModel', 
-                       alpha = 0.5)
-        
-            ax.set_ylabel('Depth (mm)')
-            
-        
-        ax.set_xlabel('Apparent Age (a)')
-        ax.set_ylim(self.df_reduced['Depths'].values.max() + 5, 
-                    self.df_reduced['Depths'].values.min() - 5)
-        
-        ax.legend(loc = 3)
+            low, high, median = self.Age_Model()
+            depths = self.Ibis_Stratigraphy.depth_grid
+    
+            ax.fill_betweenx(
+                depths, low, high,
+                alpha=0.5,
+                label="Age-depth model",
+            )
+            ax.plot(median, depths, color="navy")
+    
+        ax.set_ylabel("Depth (mm)")
+        ax.set_xlabel("Apparent age (a)")
+        ax.invert_yaxis()
+        ax.legend()
+    
+        return fig, ax
         
     def SaveSummary(self):
-        self.Ibis_Chains.SummaryDataFrame()
-        print(f'Summary saved to {self.sample_name}_ibis_summary.csv')
+        if not self.Chain_run:
+            self.Run_MCMC()
+
+        return self.Ibis_Chains.SummaryDataFrame()
         
     def MakeCompleteDataFrame(self):
         """
@@ -657,6 +664,8 @@ class IBIS:
         * Depths measured and uncertainties
         * IBIS outputs
         """
+        if not self.Chain_run:
+            self.Run_MCMC()
         df_ibis = self.Ibis_Chains.MakeSummaryDataFrame()
         df_data = self.df_reduced
         df_combined = df_ibis.join(df_data)
@@ -766,7 +775,7 @@ class IBIS:
                                                self.n_chains, 
                                                iterations = self.MCMC_Strat_samples, 
                                                burn_in = int(self.MCMC_Strat_samples)/2, 
-                                                resolution=self.meta.get("resolution", 100),
+                                               resolution=self.meta.get("resolution", self.strat_resolution),
                                                 top_age=self.meta.get("top_age", None),
                                                 top_age_err=self.meta.get("top_age_err", None),
                                                 top_age_depth=self.meta.get("top_age_depth", None),
@@ -776,7 +785,8 @@ class IBIS:
                                                 sigma_extra=0.0,
                                                 smoothness_mu=self.meta.get("smoothness_mu", 1e-5),
                                                 smoothness_sigma=self.meta.get("smoothness_sigma", 5),
-                                                save_dir=self.save_dir)
+                                                save_dir=self.save_dir,
+                                                n_jobs=self.n_jobs)
         
         self.Ibis_Stratigraphy.Run_MCMC_Strat();
         self.Chain_strat_run = True
@@ -784,7 +794,6 @@ class IBIS:
     def Age_Model(self): 
         if not self.Chain_strat_run: 
             self.Run_MCMC_Strat()
-            self.results_dicts  = self.Ibis_Stratigraphy.Get_Results_Dictionary()
 
         self.age_low, self.age_high, self.age_median = self.Ibis_Stratigraphy.Get_Age_Model()
 
@@ -793,17 +802,20 @@ class IBIS:
     def Depth_Model(self): 
         if not self.Chain_strat_run: 
             self.Run_MCMC_Strat()
-            self.results_dicts  = self.Ibis_Stratigraphy.Get_Results_Dictionary()
-
 
         self.depth_low, self.depth_high, self.depth_median = self.Ibis_Stratigraphy.Get_Depth_Model()
 
         return self.depth_low, self.depth_high, self.depth_median
 
-    def Get_Age_Depth_Plot(self): 
-        self.Ibis_Stratigraphy.Get_Age_Depth_Plot()
+    def Get_Age_Depth_Plot(self):
+        if not self.Chain_strat_run:
+            self.Run_MCMC_Strat()
 
-    def Save_Age_Depth_Model(self): 
-        self.Ibis_Stratigraphy.Save_Age_Depth_Model()
-        print(f'Age/Depth model saved to: {self.sample_name}_Age_Depth_Model.xlsx')
+        return self.Ibis_Stratigraphy.Get_Age_Depth_Plot_HighRes()
+
+    def Save_Age_Depth_Model(self):
+        if not self.Chain_strat_run:
+            self.Run_MCMC_Strat()
+
+        return self.Ibis_Stratigraphy.Get_HighRes_Dataframe()
         
