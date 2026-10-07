@@ -1,39 +1,93 @@
-## Install 
-IBIS is accessed through python. You can install the package via pip: 
+## Install
 
-pip install ibis-uth
+IBIS release **0.3.2** supports **Python 3.12, 3.13 and 3.14**. Python 3.14 is recommended for a fresh installation.
 
-## Update to latest package
-pip install ibis-uth --upgrade 
+Create a virtual environment using a supported Python interpreter. The examples below use Python 3.14.
 
-## Install 2 - if install 1 is being tricky. 
-(1) Create and activate an environment
-python 3.11 -m venv .venv
+On macOS or Linux:
+
+```bash
+python3.14 -m venv .venv
 source .venv/bin/activate
+```
 
-(2) Install IBIS + jupyter kernel support
-pip install --upgrade pip
-pip install ibis-uth
-pip install jupyterlab ipykernel
+On Windows, in PowerShell:
 
-(3) Register the Kernel 
-python -m ipykernel install --user --name ibis --display-name "Python (IBIS)"
+```powershell
+py -3.14 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
 
-(4) Start a Jupyter notebook
-jupyter notebook
+If `python3.14` is not on your Mac's PATH after using the standard python.org installer, create the environment with:
 
-(5) Select the Kernel
-Kernel -> Change Kernel -> Python (IBIS)
+```bash
+/Library/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -m venv .venv
+source .venv/bin/activate
+```
 
+With the environment active, install IBIS:
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install ibis-uth
+python -m pip check
+```
+
+## Jupyter notebooks
+
+Install the optional notebook dependencies in the same environment:
+
+```bash
+python -m pip install "ibis-uth[notebook]"
+python -m ipykernel install --user --name ibis-uth --display-name "Python (IBIS U-Th)"
+python -m jupyterlab
+```
+
+Open your notebook and select **Kernel > Change Kernel > Python (IBIS U-Th)**. Confirm that it uses the intended environment:
+
+```python
+import sys
+print(sys.executable)
+```
+
+## Update to the latest package
+
+Activate your IBIS environment, then run:
+
+```bash
+python -m pip install --upgrade ibis-uth
+python -m pip check
+```
+
+For an installation with notebook support:
+
+```bash
+python -m pip install --upgrade "ibis-uth[notebook]"
+python -m pip check
+```
+
+Restart your notebook kernel after an update.
 
 ## Dependencies
-Dependencies are written in both requirements.txt and pyproject.poml. <br>
-pip install should import all neccessary dependencies however python version >= 3.10 is needed
+
+Runtime dependencies are declared in **`pyproject.toml`**: NumPy, pandas, SciPy, scikit-learn, Matplotlib, Tqdm, Joblib, Dill and OpenPyXL. Pip installs these libraries and their dependencies automatically.
+
+`requirements.txt` installs the local project using those same declarations. The optional `notebook` extra supplies IPykernel and JupyterLab; the `dev` extra supplies build and Twine. This keeps package installation and the requirements files consistent.
+
+To install a local checkout, run from the directory containing `pyproject.toml`:
+
+```bash
+python -m pip install -e ".[notebook,dev]"
+python -m pip check
+```
 
 ## Import
 
-import ibis <br>
+```python
+import ibis
 from ibis.IBIS_Main import IBIS
+```
+
 
 ## IBIS
 -----
