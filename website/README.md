@@ -1,19 +1,8 @@
 # IBIS Part 1 · Web interface
 
-A FastAPI website for **IBIS U–Th 0.3.2**, designed to live inside the existing `jcarter-1/IBIS-UTh` repository as its `website/` directory. It implements only the first stage: an empirical Thoth initial-thorium prior and sample-specific Bayesian corrected ages. It **does not** run `Run_MCMC_Strat()` and **does not** produce an age–depth fit.
+A FastAPI website for **IBIS U–Th 0.3.2**, designed to live inside the existing `jcarter-1/IBIS-UTh` repository as its `website/` directory. It implements only the first stage: an empirical Thoth initial-thorium prior and sample-specific Bayesian corrected ages. This is only for part 1 of the IBIS model framework. No age-depth models here. 
 
-## Run it on your Mac
 
-Install Python 3.12, 3.13, or 3.14 (the supported versions for `ibis-uth` 0.3.2). From the **IBIS-UTh repository root**:
-
-```bash
-python3.14 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt -r website/requirements.txt
-python -m uvicorn website.app:app --reload
-```
-
-Open **http://127.0.0.1:8000** in your browser. You can substitute another supported Python minor version in the first command. For GitHub/Render setup see the accompanying `DEPLOY_TO_GITHUB.md`.
 
 ## Workflow
 
@@ -21,12 +10,15 @@ Open **http://127.0.0.1:8000** in your browser. You can substitute another suppo
 2. Set the flexible/detrital proposal fraction, global-versus-local Thoth weight, and the option to propagate *proposed initial-Th uncertainty* into the Thoth age-σ likelihood.
 3. Generate the Thoth prior. Once this finishes, click **Run IBIS Part 1** to run MCMC with the same prior and settings.
 4. Inspect the prior density, age comparisons, sample-specific initial-Th posterior, and download a CSV with all age estimates and uncertainties.
+5. Add age-depth part will be done but ages and inference from part 1 can be extract and then the age-depth modeling software of choice can be used.
+
+
 
 ### Faraji et al. (2021) test case
 
 Click **Faraji et al. (2021) test case** to populate ten analyses and enable the published initial-thorium reference comparison. The test case is embedded directly in `static/script.js`, so no separate CSV file is required; you can also import the original `.xlsx` yourself as an ordinary dataset.
 
-Run **Generate prior**, then **Run IBIS Part 1**. For the Faraji preset, results include an additional **1:1 diagram** of posterior IBIS initial `(²³⁰Th/²³²Th)ₐ₀` against the ten back-calculated values from laminae ages: `[8.05, 6.00, 5.98, 6.63, 7.74, 6.55, 6.01, 6.21, 6.87, 4.88]`, with published absolute 1σ uncertainties `[0.24, 0.25, 0.27, 0.25, 0.18, 0.21, 0.50, 0.46, 0.27, 0.97]`. Horizontal bars show Faraji ±2σ and vertical bars show IBIS 95% credible intervals; the dashed diagonal represents perfect agreement. Matchups use **depth** rather than lexically sorting sample labels (`PU17-10` precedes `Pu17-7` by depth). CSV downloads include the matched sample name, Faraji estimate, uncertainty and IBIS-minus-Faraji difference. Adjusting Thoth settings preserves the reference comparison, but manually editing the measurements clears it to avoid incorrect matchups.
+Run **Generate prior**, then **Run IBIS Part 1**. For the Faraji preset, results include an additional **1:1 diagram** of posterior IBIS initial `(²³⁰Th/²³²Th)ₐ₀` against the ten back-calculated values from laminae ages: `[8.05, 6.00, 5.98, 6.63, 7.74, 6.55, 6.01, 6.21, 6.87, 4.88]`, with published absolute 1σ uncertainties `[0.24, 0.25, 0.27, 0.25, 0.18, 0.21, 0.50, 0.46, 0.27, 0.97]`. Horizontal bars show Faraji ±1σ and vertical bars show IBIS 68% credible intervals; the dashed diagonal represents perfect agreement. Matchups use **depth** rather than lexically sorting sample labels (`PU17-10` precedes `Pu17-7` by depth). CSV downloads include the matched sample name, Faraji estimate, uncertainty and IBIS-minus-Faraji difference. Adjusting Thoth settings preserves the reference comparison, but manually editing the measurements clears it to avoid incorrect matchups.
 
 *Citation:* Faraji, M., Borsato, A., Frisia, S., Hellstrom, J. C., Lorrey, A., Hartland, A., Greig, A. & Mattey, D. P. (2021). Accurate dating of stalagmites from low seasonal contrast tropical Pacific climate using Sr 2D maps, fabrics and annual hydrological cycles. *Scientific Reports* **11**, 2178.
 
@@ -48,7 +40,7 @@ The supplied default sampling settings are **exploratory**, not a claim of conve
 - **Bulk Earth age ±1σ:** the same equation using initial-Th `0.83 ± 0.43 (1σ)`, propagated with the measurement uncertainties.
 - **IBIS age:** posterior median, the package's symmetric equivalent 1σ estimate, and equal-tailed 68% and 95% intervals.
 - **Initial thorium:** IBIS posterior median, symmetric 1σ estimate, and 95% interval. The CSV also includes initial `(²³⁴U/²³⁸U)ₐ` and its uncertainty.
-- The comparison plot displays analysis values by depth **without fitting an age–depth curve**. Conventional ages have horizontal bars of ±2σ; IBIS ages use the actual asymmetric equal-tailed 95% interval.
+- The comparison plot displays analysis values by depth **without fitting an age–depth curve**. Conventional ages have horizontal bars of ±1σ; IBIS ages use the actual asymmetric equal-tailed 68% interval.
 
 ## Notes for deploying
 
@@ -56,4 +48,4 @@ The front end is static HTML/CSS/JS, but results require a running **Python** Fa
 
 ## Quick check
 
-Open `/api/health`, then test **Synthetic example → Generate prior → Run IBIS Part 1**. Repeat with **Faraji et al. (2021)** to exercise the published-reference comparison. The default sampling settings are exploratory and do not establish scientific convergence.
+Open `/api/health`, then test **Synthetic example → Generate prior → Run IBIS Part 1**. Repeat with **Faraji et al. (2021)** to exercise the published-reference comparison. The default sampling settings are exploratory they are not scientifically robust. 
