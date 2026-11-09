@@ -4,11 +4,23 @@ A local FastAPI website for **IBIS U–Th 0.3.2**. It implements only the first 
 
 ## Run it on your Mac
 
-Install Python 3.12, 3.13, or 3.14 (the supported versions for `ibis-uth` 0.3.2). 
-Use the .sh start up code. 
-From the folder directory run $bash start_ibis.sh
+1. Install Python
 
-The first run will install all IBIS dependencies then send you to the locally hosted website. Running the second time will just send you to the website page. 
+Install Python 3.12, 3.13, or 3.14, which are supported by ibis-uth v0.3.2.
+
+2. Launch the website
+
+Open a terminal, go to the website directory, and run:
+
+bash start_ibis.sh
+
+3. Access IBIS
+
+First launch: The startup script automatically installs the required IBIS dependencies, starts the local server, and opens the website in your browser.
+
+Subsequent launches: The script reuses the existing installation and launches the website directly, without reinstalling dependencies.
+
+The website runs locally on your computer.
 
 ## Workflow
 
