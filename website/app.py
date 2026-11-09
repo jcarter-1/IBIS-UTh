@@ -1,12 +1,14 @@
 """IBIS 0.3.2 Part 1 web interface: Thoth prior and sample-specific U–Th ages.
 
-From the IBIS-UTh repository root, launch with:
-    uvicorn website.app:app --reload
+Launch with: uvicorn app:app --reload
 """
 from __future__ import annotations
 
 import base64
-import os
+import pickle
+import io
+import hashlib
+import json
 import tempfile
 import threading
 import uuid
@@ -22,6 +24,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
@@ -31,7 +34,6 @@ from ibis.IBIS_Thoth_V2 import U_Series_Age_Equation
 
 BASE = Path(__file__).resolve().parent
 NAVY, BLUE, RED, GOLD, GREY = "#213555", "#7C9AB7", "#BA5C58", "#C89D57", "#8997A8"
-DEMO_MODE = os.environ.get("IBIS_DEMO_MODE", "0").lower() in {"1", "true", "yes"}
 
 app = FastAPI(title="IBIS | Initial Thorium & U–Th Ages", version="0.3.2-web")
 _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ibis")
@@ -68,20 +70,6 @@ class Settings(BaseModel):
     iterations: int = Field(default=4000, ge=100, le=2000000)
     burn_in: int = Field(default=2000, ge=0, le=2000000)
 
-    @model_validator(mode="after")
-    def check_demo_limits(self):
-        # Public test links need a guard against accidental multi-hour runs.
-        # Normal local/research runs are not affected.
-        if DEMO_MODE and (
-            self.n_chains > 3 or self.iterations > 10000 or self.burn_in > 10000
-            or self.n_samples_global > 1500 or self.n_samples_layer > 500
-        ):
-            raise ValueError(
-                "Public demo limits: up to 3 chains, 10,000 iterations and burn-in, "
-                "1,500 global proposals, and 500 local proposals."
-            )
-        return self
-
 
 class PriorRequest(BaseModel):
     rows: list[Analysis]
@@ -92,8 +80,6 @@ class PriorRequest(BaseModel):
     def validate_data(self):
         if not 3 <= len(self.rows) <= 200:
             raise ValueError("Supply 3–200 measurements for IBIS Part 1.")
-        if DEMO_MODE and len(self.rows) > 40:
-            raise ValueError("Public demo runs accept up to 40 analyses.")
         data = pd.DataFrame([row.model_dump() for row in self.rows])
         if not np.isfinite(data.drop(columns=["Depth_err"]).to_numpy(dtype=float)).all():
             raise ValueError("All ratios, 1σ uncertainties, and depths must be finite.")
@@ -109,8 +95,15 @@ class PriorRequest(BaseModel):
         return self
 
 
+class MCMCSettings(BaseModel):
+    n_chains: int = Field(default=3, ge=2, le=6)
+    iterations: int = Field(default=4000, ge=100, le=2000000)
+    burn_in: int = Field(default=2000, ge=0, le=2000000)
+
+
 class Part1Request(BaseModel):
     prior_job_id: str
+    mcmc: MCMCSettings = Field(default_factory=MCMCSettings)
 
 
 _COLUMN_ALIASES = {
@@ -218,14 +211,14 @@ def _meta(settings: Settings) -> dict:
     }
 
 
-def _model(folder: Path, settings: Settings) -> IBIS:
+def _model(folder: Path, settings: Settings, *, start_from_pickles=False) -> IBIS:
     return IBIS(
         filepath=folder / "measurements.csv",
         sample_name="IBIS_Web",
         MCMC_samples=settings.iterations,
         MCMC_burn_in=settings.burn_in,
         n_chains=settings.n_chains,
-        Start_from_pickles=False,
+        Start_from_pickles=start_from_pickles,
         Top_Age_Stal=False,
         show_bird=False,
         method="thoth",
@@ -372,24 +365,21 @@ def _plot_faraji_reference(rows: list[dict]):
     x = np.array([r["faraji_initial"] for r in rows])
     sx = np.array([r["faraji_sigma"] for r in rows])
     y = np.array([r["th0"] for r in rows])
-    lo95 = np.array([r["th0_lo95"] for r in rows])
-    hi95 = np.array([r["th0_hi95"] for r in rows])
-    # Matplotlib takes asymmetric error distances, not interval endpoints.
-    sy = np.vstack([np.maximum(y - lo95, 0), np.maximum(hi95 - y, 0)])
+    sy = np.array([r["th0_sigma"] for r in rows])
     depths = np.array([r["Depth"] for r in rows])
 
-    plot_lo = max(0.0, float(min(np.min(x - 2 * sx), np.min(y - sy[0]))))
-    plot_hi = float(max(np.max(x + 2 * sx), np.max(y + sy[1])))
-    pad = max(0.2, (plot_hi - plot_lo) * 0.06)
+    lo = max(0.0, float(min(np.min(x - 2 * sx), np.min(y - 2 * sy))))
+    hi = float(max(np.max(x + 2 * sx), np.max(y + 2 * sy)))
+    pad = max(0.2, (hi - lo) * 0.06)
 
     fig, ax = plt.subplots(figsize=(7.6, 6.8))
-    ax.plot([plot_lo - pad, plot_hi + pad], [plot_lo - pad, plot_hi + pad], color=RED,
+    ax.plot([lo - pad, hi + pad], [lo - pad, hi + pad], color=RED,
             ls="--", lw=1.6, alpha=0.9, zorder=1, label="1:1 agreement")
-    ax.errorbar(x, y, xerr=2 * sx, yerr=sy, ls="none", color="#7E8FA3",
+    ax.errorbar(x, y, xerr=sx, yerr=sy, ls="none", color="#7E8FA3",
                 elinewidth=1.3, capsize=2.8, alpha=0.8, zorder=2)
     points = ax.scatter(x, y, c=depths, cmap="cividis", s=73,
                         edgecolor="white", linewidth=1.1, zorder=3)
-    ax.set(xlim=(plot_lo - pad, plot_hi + pad), ylim=(plot_lo - pad, plot_hi + pad),
+    ax.set(xlim=(lo - pad, hi + pad), ylim=(lo - pad, hi + pad),
            xlabel=r"Faraji et al. (2021) back-calculated ($^{230}$Th/$^{232}$Th)$_{A0}$",
            ylabel=r"IBIS posterior ($^{230}$Th/$^{232}$Th)$_{A0}$")
     ax.set_aspect("equal", adjustable="box")
@@ -404,25 +394,181 @@ def _plot_faraji_reference(rows: list[dict]):
     return _png(fig)
 
 
-def _run_part1(job_id, prior_job_id: str):
+def _split_chains(draws):
+    """Split each chain in half for nonstationarity-sensitive diagnostics."""
+    x = np.asarray(draws, dtype=np.float64)
+    if x.ndim != 2:
+        raise ValueError("Expected a 2D array: (chain, retained_draw).")
+    m, n = x.shape
+    if m < 2 or n < 8 or not np.all(np.isfinite(x)):
+        return None
+    half = n // 2
+    return np.concatenate((x[:, :half], x[:, -half:]), axis=0)
+
+
+def _split_rhat(draws):
+    """Classical split Gelman-Rubin R-hat (not rank-normalized)."""
+    x = _split_chains(draws)
+    if x is None:
+        return None
+    m, n = x.shape
+    w = float(np.var(x, axis=1, ddof=1).mean())
+    b = float(n * np.var(x.mean(axis=1), ddof=1))
+    if w <= 0:
+        return None  # constant chains: R-hat undefined
+    value = np.sqrt(((n - 1) / n * w + b / n) / w)
+    return float(value) if np.isfinite(value) else None
+
+
+def _autocovariance_fft(x):
+    """Autocovariance of rows of x, normalized by N (FFT method)."""
+    x = x - x.mean(axis=1, keepdims=True)
+    n = x.shape[1]
+    nfft = 1 << (2 * n - 1).bit_length()
+    f = np.fft.rfft(x, n=nfft, axis=1)
+    return np.fft.irfft(f * np.conjugate(f), n=nfft, axis=1)[:, :n] / n
+
+
+def _ess_autocorrelation(draws):
+    """Approximate split-chain autocorrelation ESS using positive pairs.
+
+    This is not rank-normalized bulk ESS or quantile/tail ESS.
+    """
+    x = _split_chains(draws)
+    if x is None:
+        return None
+    m, n = x.shape
+    within = float(np.var(x, axis=1, ddof=1).mean())
+    between = float(n * np.var(x.mean(axis=1), ddof=1))
+    var_plus = (n - 1) / n * within + between / n
+    if not np.isfinite(var_plus) or var_plus <= 0:
+        return None
+    acov = _autocovariance_fft(x).mean(axis=0)
+    # Split-chain autocorrelation estimator with between-chain correction.
+    rho = 1.0 - (within - acov) / var_plus
+    rho[0] = 1.0
+    # Initial positive sequence of adjacent autocorrelation pairs.
+    tau = -1.0
+    for k in range(0, n - 1, 2):
+        pair = float(rho[k] + rho[k + 1])
+        if not np.isfinite(pair) or pair <= 0:
+            break
+        tau += 2.0 * pair
+    tau = max(1.0, tau)
+    value = (m * n) / tau
+    return float(np.clip(value, 1.0, m * n)) if np.isfinite(value) else None
+
+
+def _extract_chain_diagnostics(model):
+    """Use the actual stored IBIS_MCMC Chain_Results arrays (no ArviZ)."""
+    chains = getattr(model, "Ibis_Chains", None)
+    raw = getattr(chains, "Chain_Results", None)
+    if raw is None or len(raw) < 2:
+        return {"status": "unavailable", "message": "No chain-separated samples found."}, None
+
+    names = ("Age", "Initial Th", "234U/238U", "232Th/238U", "230Th/238U", "Initial 234U/238U")
+    indexes = (0, 1, 2, 3, 4, 6)
+    try:
+        arrays = {name: np.stack([np.asarray(chain[idx], dtype=float) for chain in raw])
+                  for name, idx in zip(names, indexes)}
+        arrays["Log posterior"] = np.stack([np.asarray(chain[5], dtype=float) for chain in raw])
+        c, n = arrays["Log posterior"].shape
+        if c < 2 or n < 8:
+            return {"status": "unavailable", "message": "Need >=2 chains and >=8 retained draws."}, arrays
+        if not all(np.isfinite(a).all() for a in arrays.values()):
+            return {"status": "unavailable", "message": "Non-finite values found in chain output."}, arrays
+        stats = []
+        for name in names:
+            a = arrays[name]
+            for j in range(a.shape[2]):
+                sample = a[:, :, j]
+                stats.append({
+                    "parameter": name,
+                    "depth_index": j,
+                    "rhat": _split_rhat(sample),
+                    "ess_bulk": _ess_autocorrelation(sample),  # legacy API key for frontend
+                    "ess_tail": None,
+                })
+        good_r = [r["rhat"] for r in stats if r["rhat"] is not None]
+        good_ess = [r["ess_bulk"] for r in stats if r["ess_bulk"] is not None]
+        return {
+            "status": "available",
+            "message": "Classical split R-hat and approximate autocorrelation ESS from retained draws (NumPy only). Tail ESS not calculated.",
+            "n_chains": c, "n_draws": n, "parameters": list(names), "stats": stats,
+            "max_rhat": max(good_r) if good_r else None,
+            "min_ess_bulk": min(good_ess) if good_ess else None,
+        }, arrays
+    except (ValueError, TypeError, IndexError) as exc:
+        return {"status": "unavailable", "message": f"Cannot read chain arrays: {exc}"}, None
+
+
+def _run_part1(job_id, run_request: Part1Request):
+    prior_job_id = run_request.prior_job_id
     with _lock:
         source = _jobs.get(prior_job_id)
         if not source or source.get("kind") != "prior" or source.get("status") != "complete":
             raise ValueError("The Thoth prior is missing or has not completed.")
         folder = Path(source["folder"])
         settings = Settings(**source["result"]["settings"])
+        # MCMC controls are independent from the cached Thoth configuration.
+        settings = settings.model_copy(update=run_request.mcmc.model_dump())
         comparison = [dict(r) for r in source["result"]["comparisons"]]
         references = source["result"].get("references")
     _set_job(job_id, stage=f"Running IBIS Part 1 · {settings.n_chains} MCMC chains")
-    model = _model(folder, settings)
+    model = _model(folder, settings, start_from_pickles=bool(source.get("imported")))
     model.Run_MCMC()  # Explicitly no Run_MCMC_Strat() / age-depth modeling.
     _set_job(job_id, stage="Summarizing posterior ages and initial thorium")
     posterior = model.Ibis_Chains.MakeSummaryDataFrame().sort_values("Depth_Meas", kind="stable").reset_index(drop=True)
     if len(posterior) != len(comparison):
         raise ValueError("IBIS posterior length does not match the input analyses.")
+
+    # ---------------------------------------------------------
+    # Read the original U-Th measurements
+    # ---------------------------------------------------------
+
+    measurements = (
+        pd.read_csv(folder / "measurements.csv")
+        .sort_values("Depth", kind="stable")
+        .reset_index(drop=True)
+    )
+
+    if len(measurements) != len(posterior):
+        raise ValueError(
+            "Measurement and posterior row counts do not match."
+        )
     rows = []
     for i, row in posterior.iterrows():
         r = dict(comparison[i])
+        # Include the original analytical measurements
+        measurement = measurements.iloc[i]
+
+        # Verify measurements are aligned with posterior samples
+        if not np.isclose(
+            measurement["Depth"],
+            row["Depth_Meas"],
+            atol=1e-9,
+            rtol=1e-9
+        ):
+            raise ValueError("Measurement/posterior depth mismatch.")
+
+        for column in [
+            "U234_r",
+            "U234_r_err",
+            "Th230_r",
+            "Th230_r_err",
+            "Th232_r",
+            "Th232_r_err"
+        ]:
+            r[column] = float(measurement[column])
+
+        # Depth uncertainty is optional
+        depth_err = measurement["Depth_err"]
+
+        r["Depth_err"] = (
+            float(depth_err)
+            if pd.notna(depth_err)
+            else None
+            )   
         if not np.isclose(r["Depth"], row["Depth_Meas"], atol=1e-9, rtol=1e-9):
             raise ValueError("IBIS sample order mismatch; results were not assigned to the wrong depths.")
         r.update(
@@ -445,11 +591,12 @@ def _run_part1(job_id, prior_job_id: str):
     if not np.isfinite(numeric_rows.to_numpy(dtype=float)).all():
         raise ValueError("IBIS returned a non-finite posterior summary.")
     _set_job(job_id, stage="Drawing comparison and posterior figures")
+    diagnostics, trace_arrays = _extract_chain_diagnostics(model)
     result = {
         "rows": rows,
-        "age_plot": _plot_age_comparison(rows),
-        "thorium_plot": _plot_thorium(rows),
         "prior_job_id": prior_job_id,
+        "mcmc_settings_used": run_request.mcmc.model_dump(),
+        "diagnostics": diagnostics,
     }
     if references is not None:
         result["faraji_plot"] = _plot_faraji_reference(rows)
@@ -458,7 +605,146 @@ def _run_part1(job_id, prior_job_id: str):
             "mean_difference": float(np.mean([r["th0_difference"] for r in rows])),
             "rmse": float(np.sqrt(np.mean([r["th0_difference"] ** 2 for r in rows]))),
         }
-    _set_job(job_id, status="complete", stage="IBIS Part 1 complete", result=result)
+    _set_job(job_id, status="complete", stage="IBIS Part 1 complete", result=result, trace_arrays=trace_arrays)
+
+
+# ============================================================
+# DATA EXPLORATION — CONVENTIONAL U–Th AGES
+# ============================================================
+
+class ConventionalAgeRequest(BaseModel):
+    rows: list[Analysis]
+
+
+# A prior workspace bundle stores the actual files produced by Set_Up_MCMC,
+# not just its plotted PDF. Only upload files you created/trust: cached IBIS
+# .pkl files may be deserialized by the installed IBIS package.
+PRIOR_FORMAT = "ibis-thoth-workspace-v1"
+MAX_BUNDLE_SIZE = 30_000_000
+MAX_FILE_BYTES = 15_000_000
+
+
+class _RestrictedBundleUnpickler(pickle.Unpickler):
+    """The OUTER .pkl must contain only basic Python data containers."""
+    def find_class(self, module, name):
+        raise pickle.UnpicklingError("Executable pickle classes are forbidden")
+
+
+def _prior_bundle(job: dict) -> bytes:
+    folder = Path(job["folder"])
+    files = {}
+    for path in folder.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(folder)
+        if len(rel.parts) > 4 or path.stat().st_size > MAX_FILE_BYTES:
+            raise ValueError("Prior workspace contains an unsupported file")
+        files[rel.as_posix()] = path.read_bytes()
+    if "measurements.csv" not in files:
+        raise ValueError("Prior workspace is missing measurements.csv")
+    obj = {
+        "format": PRIOR_FORMAT,
+        "settings": job["result"]["settings"],
+        "comparisons": job["result"]["comparisons"],
+        "references": job["result"].get("references"),
+        "prior_summary": job["result"]["prior_summary"],
+        "prior_plot": job["result"]["prior_plot"],
+        "files": files,
+    }
+    output = pickle.dumps(obj, protocol=4)
+    if len(output) > MAX_BUNDLE_SIZE:
+        raise ValueError("Prior bundle exceeds the 30 MB limit")
+    return output
+
+
+@app.get("/api/prior/{job_id}/download")
+def download_prior(job_id: str):
+    with _lock:
+        job = _jobs.get(job_id)
+        if not job or job.get("kind") != "prior" or job.get("status") != "complete":
+            raise HTTPException(404, "Completed prior not found")
+    try:
+        payload = _prior_bundle(job)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return Response(payload, media_type="application/octet-stream", headers={
+        "Content-Disposition": 'attachment; filename="IBIS_Thoth_Prior.pkl"',
+        "Cache-Control": "no-store",
+    })
+
+
+@app.post("/api/prior/upload")
+async def upload_prior(request: Request):
+    body = await request.body()
+    if not body or len(body) > MAX_BUNDLE_SIZE:
+        raise HTTPException(413, "Select a saved IBIS Thoth .pkl smaller than 30 MB")
+    try:
+        obj = _RestrictedBundleUnpickler(io.BytesIO(body)).load()
+        if not isinstance(obj, dict) or obj.get("format") != PRIOR_FORMAT:
+            raise ValueError("Not an IBIS Thoth workspace bundle")
+        files = obj["files"]
+        if not isinstance(files, dict) or "measurements.csv" not in files or len(files) > 500:
+            raise ValueError("Invalid prior workspace")
+        settings = Settings(**obj["settings"])
+        comparison = obj["comparisons"]
+        summary = obj["prior_summary"]
+        plot = obj["prior_plot"]
+        references = obj.get("references")
+        if not isinstance(comparison, list) or not isinstance(summary, dict) or not isinstance(plot, str):
+            raise ValueError("Invalid prior summary")
+        tmp = tempfile.TemporaryDirectory(prefix="ibis-restored-prior-")
+        folder = Path(tmp.name)
+        for name, contents in files.items():
+            rel = Path(name)
+            if (not isinstance(name, str) or not isinstance(contents, bytes)
+                    or len(rel.parts) > 4 or rel.is_absolute()
+                    or ".." in rel.parts or len(contents) > MAX_FILE_BYTES):
+                raise ValueError("Invalid file in prior bundle")
+            target = folder / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(contents)
+        df = pd.read_csv(folder / "measurements.csv")
+        if not 3 <= len(df) <= 200 or len(df) != len(comparison):
+            raise ValueError("Inconsistent saved measurements")
+        # The browser compares this fingerprint against its current table.
+        saved_rows = df.replace({np.nan: None}).to_dict(orient="records")
+        with _lock:
+            if len(_jobs) >= 30:
+                raise ValueError("Too many jobs; restart the server")
+            job_id = uuid.uuid4().hex
+            _jobs[job_id] = {
+                "status": "complete", "kind": "prior", "stage": "Prior restored",
+                "imported": True, "folder": str(folder), "temp_dir": tmp,
+                "result": {
+                    "prior_plot": plot, "prior_summary": summary,
+                    "comparisons": comparison,
+                    "settings": settings.model_dump(),
+                    "references": references,
+                }
+            }
+        return {"job_id": job_id, "result": _jobs[job_id]["result"],
+                "saved_rows": saved_rows}
+    except (ValueError, KeyError, TypeError, pickle.UnpicklingError) as exc:
+        raise HTTPException(400, f"Cannot restore prior: {exc}") from exc
+
+
+@app.post("/api/conventional-ages")
+def conventional_ages(request: ConventionalAgeRequest):
+
+    # Convert the submitted measurement rows to a DataFrame
+    df = pd.DataFrame([
+        row.model_dump() for row in request.rows
+    ])
+
+    # Sort by stratigraphic depth
+    df = df.sort_values(
+        "Depth", kind="stable"
+    ).reset_index(drop=True)
+
+    # Reuse the existing IBIS age-equation calculations
+    results = _comparisons(df)
+
+    return {"rows": results}
 
 
 @app.post("/api/prior", status_code=202)
@@ -499,7 +785,27 @@ def part1(request: Part1Request):
         prior = _jobs.get(request.prior_job_id)
         if not prior or prior["kind"] != "prior" or prior["status"] != "complete":
             raise HTTPException(400, "Generate a successful Thoth prior first.")
-    return _start("part1", request.prior_job_id)
+    return _start("part1", request)
+
+
+@app.get("/api/diagnostics/{job_id}/trace")
+def diagnostics_trace(job_id: str, parameter: str = "Log posterior", depth_index: int = 0):
+    with _lock:
+        job = _jobs.get(job_id)
+        arrays = job.get("trace_arrays") if job else None
+    if arrays is None:
+        raise HTTPException(404, "Chain traces are unavailable for this job.")
+    if parameter not in arrays:
+        raise HTTPException(400, "Unknown parameter")
+    arr = arrays[parameter]
+    if arr.ndim == 3:
+        if not 0 <= depth_index < arr.shape[2]:
+            raise HTTPException(400, "Depth index out of range")
+        arr = arr[:, :, depth_index]
+    step = max(1, int(np.ceil(arr.shape[1] / 1800)))
+    draw_index = np.arange(0, arr.shape[1], step)
+    return {"parameter": parameter, "depth_index": depth_index,
+            "draw_index": draw_index.tolist(), "chains": arr[:, ::step].tolist(), "total_draws": int(arr.shape[1])}
 
 
 @app.get("/api/jobs/{job_id}")
@@ -514,7 +820,7 @@ def status(job_id: str):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "model": "ibis-uth 0.3.2", "stage": "Part 1 only", "demo": DEMO_MODE}
+    return {"ok": True, "model": "ibis-uth 0.3.2", "stage": "Part 1 only"}
 
 
 app.mount("/", StaticFiles(directory=BASE / "static", html=True), name="static")

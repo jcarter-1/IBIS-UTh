@@ -11,4 +11,187 @@
 .results{padding:33px 0 4px;scroll-margin-top:15px}.result-tag{background:#E8F1EB;color:#5B8870}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:15px;margin-bottom:20px}.stat{border:1px solid var(--line);background:white;border-radius:12px;padding:18px 20px}.stat small{display:block;font-size:12px;color:#8594A4;margin-bottom:6px}.stat strong{font-size:24px;font-variant-numeric:tabular-nums;color:var(--navy);font-weight:650;letter-spacing:-.03em}.plot-card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:18px;margin-bottom:20px}.plot-card img{display:block;max-width:100%;width:100%;object-fit:contain}.stat-note{padding:14px 17px;border-left:3px solid var(--dusty);background:#EAF0F6;color:#6C7D91;font-size:12px;margin-bottom:18px;border-radius:0 7px 7px 0}.result-table-scroll{margin-bottom:15px;background:white}.result-table-scroll td{padding:11px 13px;text-align:right;border-right:0;white-space:nowrap}.result-table-scroll table{min-width:850px}.result-table-scroll tr:nth-child(even){background:#FAFBFE}footer{margin:70px 0 35px;padding-top:24px;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:10px;color:#9BA9B9;font-size:12px}footer strong{color:var(--navy);margin-right:12px}footer p{margin:0}
 .faraji-button{background:#E7EEED;color:#375B59;border-color:#C6DAD5}.faraji-button:hover{background:#D8E7E3}.faraji-card{margin:28px 0;padding:24px 24px 6px;background:#F0F5F4;border:1px solid #D4E4E0;border-radius:17px}.faraji-heading{margin-bottom:17px}.faraji-heading h3{margin:7px 0 6px;font-size:21px;letter-spacing:-.035em;color:var(--navy)}.faraji-heading p{color:#6A8191;font-size:13px;line-height:1.7;margin:0;max-width:820px}.faraji-card .plot-card{border-color:#E1EBE8}.faraji-summary{color:#375B59;background:#DFEBE8;border-radius:9px;padding:11px 15px;font-size:13px;font-weight:700}.faraji-card .citation{color:#71838F;font-size:11px;line-height:1.6;margin:13px 0 20px}
 .hero h1 .hero-asterisk{font-size:.36em;vertical-align:super;margin-left:3px;letter-spacing:0}.hero h1 em{font-size:clamp(28px,3.8vw,47px);line-height:1.14;letter-spacing:-.035em;display:inline-block;max-width:800px}.bird-note{max-width:630px;font-size:11px;line-height:1.6;margin:9px 0 0;color:#95A1AF}footer>.bird-note{margin:0}
+
+
+/* ================================================
+   COMPLETE IBIS RESULTS TABLE
+   ================================================ */
+
+.result-table-scroll {
+    width: 100%;
+    overflow-x: auto;
+    border: 1px solid #e1e7ef;
+    border-radius: 10px;
+    margin-top: 20px;
+}
+
+.full-results-table {
+    border-collapse: separate;
+    border-spacing: 0;
+    width: max-content;
+    min-width: 100%;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
+.full-results-table th {
+    background: #213555;
+    color: white;
+    padding: 12px 14px;
+    text-align: center;
+    white-space: nowrap;
+    font-weight: 600;
+    position: sticky;
+    top: 0;
+}
+
+.full-results-table td {
+    padding: 10px 14px;
+    text-align: right;
+    white-space: nowrap;
+    border-bottom: 1px solid #e7ebf0;
+}
+
+.full-results-table tbody tr:nth-child(even) {
+    background: #f5f7fa;
+}
+
+.full-results-table tbody tr:hover {
+    background: #e8eff7;
+}
+
+/* Keep depth visible while scrolling horizontally */
+
+.full-results-table th:first-child,
+.full-results-table td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    background: #edf2f8;
+    color: #213555;
+    font-weight: 600;
+}
+
+.full-results-table th:first-child {
+    background: #213555;
+    color: white;
+    z-index: 3;
+}
+
+
+/* ============================================
+   IBIS RESULTS DOWNLOAD
+   ============================================ */
+
+.download-results {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+
+    margin-top: 26px;
+    padding: 24px;
+
+    background: #F3F6FA;
+    border: 1px solid #E2E7EE;
+    border-radius: 14px;
+}
+
+.download-results h3 {
+    margin: 0 0 7px;
+    color: #213555;
+    font-size: 18px;
+}
+
+.download-results p {
+    margin: 0;
+    color: #718095;
+    font-size: 13px;
+    line-height: 1.7;
+    max-width: 650px;
+}
+
+.download-results .button {
+    flex-shrink: 0;
+}
+
+@media (max-width: 700px) {
+    .download-results {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+}
+
+
+
 @media(max-width:750px){.hero{padding-top:52px}.steps .step{padding:13px 11px;gap:6px;font-size:11px}.panel{padding:20px}.settings-grid,.action-grid{grid-template-columns:1fr}.advanced-grid{grid-template-columns:repeat(2,1fr)}.stats{grid-template-columns:1fr}.panel-heading,.results-head{flex-wrap:wrap}.below-table{flex-wrap:wrap}.version{font-size:9px}.brand-light{display:none}footer{flex-direction:column}}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*:before,*:after{animation-duration:.01ms!important;transition:none!important}}
+
+/* Compact responsive post-IBIS Plotly figures */
+.result-figure { max-width:100%; min-width:0; overflow:hidden; }
+.result-figure h3 { margin:0 0 8px; font-size:17px; color:#213555; }
+.ibis-plot { width:100%; height:420px; min-width:0; }
+@media(max-width:700px) { .ibis-plot {height:370px;} }
+
+.prior-download{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin:16px 0 24px}.prior-download .help{margin:0}
+.action-stage .file-button{grid-column:1/-1;margin-top:9px;width:100%}
+
+/* Separate sampler controls */
+.mcmc-controls { margin: 0 0 18px; }
+#mcmcStage .button { margin-top: 12px; }
+#logPosteriorPlot:empty { display: none; }
+#rhatDiagnostics { color: #718095; font-size: 12px; margin: 12px 0; }
+
+.diagnostic-controls{display:flex;flex-wrap:wrap;gap:16px;margin:16px 0 20px}.diagnostic-controls label{font-size:12px;color:#52677D;font-weight:700;flex:1;min-width:180px}.diagnostic-controls select{display:block;margin-top:6px;width:100%;border:1px solid #D8E1EC;border-radius:8px;background:white;padding:10px;color:#213555}.ibis-plot{min-width:0;max-width:100%}#rhatDiagnostics{width:100%;min-width:530px}#rhatDiagnostics td{padding:9px 13px;text-align:right}
+
+
+/* ===== Collapsible MCMC diagnostics ===== */
+.diagnostics-details { padding: 0; overflow: visible; }
+.diagnostics-heading {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 18px; padding: 20px 24px; cursor: pointer;
+  list-style: none; color: var(--navy);
+}
+.diagnostics-heading::-webkit-details-marker { display: none; }
+.diagnostics-heading::marker { content: ""; }
+.diagnostics-heading:hover { background: #F6F9FC; border-radius: 16px; }
+.diagnostics-heading:focus-visible { outline: 3px solid #8DAFCC; outline-offset: -4px; }
+.diagnostics-heading-text { display: flex; flex-direction: column; gap: 3px; }
+.diagnostics-heading-text strong { font-size: 18px; font-weight: 750; }
+.diagnostics-heading-text small { font-size: 12px; color: #718095; font-weight: 450; }
+.diagnostics-chevron {
+  width: 11px; height: 11px; flex: none;
+  border-right: 2px solid #526981; border-bottom: 2px solid #526981;
+  transform: rotate(45deg); transition: transform .18s ease;
+}
+.diagnostics-details[open] .diagnostics-chevron { transform: rotate(225deg); }
+.diagnostics-details[open] .diagnostics-heading { border-bottom: 1px solid var(--line); }
+.diagnostics-content { padding: 5px 22px 24px; min-width: 0; }
+.diagnostics-content h4 { margin: 16px 0 0; color: var(--navy); }
+.diagnostics-content #diagnosticSummary { margin-top: 12px; }
+.diagnostics-content .result-table-scroll { margin-top: 12px; }
+
+/* ===== Grouped, plain-language output table headings ===== */
+.full-results-table caption {
+  caption-side: top; text-align: left; padding: 12px 14px;
+  background: #F6F8FC; color: #60738B; font-size: 12px; line-height: 1.5;
+}
+.full-results-table thead .group-row th {
+  background: #213555; color: white; font-size: 11px;
+  letter-spacing: .035em; padding: 10px 12px;
+  position: sticky; top: 0; z-index: 3;
+  border-right: 1px solid #425875;
+}
+.full-results-table thead .column-row th {
+  background: #EAF0F6; color: #213555; padding: 12px 14px;
+  font-size: 11px; font-weight: 750; position: sticky; top: 36px; z-index: 2;
+  border-right: 1px solid #D5DFEA;
+}
+/* Freeze depth column when scrolling sideways. */
+.full-results-table thead .column-row th:first-child {
+  left: 0; z-index: 5; background: #DDE7F2; color: #213555;
+}
+.full-results-table td:first-child { z-index: 1; }
+.full-results-table th, .full-results-table td { font-variant-numeric: tabular-nums; }
+
+/* Group headings scroll normally; only the individual depth column is frozen. */
+.full-results-table thead .group-row th:first-child { left: auto; z-index: 3; }

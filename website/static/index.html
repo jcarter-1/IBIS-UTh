@@ -4,12 +4,15 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#213555" />
-  <title>IBIS · Bayesian U–Th Age Estimation</title>
+  <title>IBIS· Bayesian U–Th Age Estimation</title>
   <meta name="description" content="IBIS 0.3.2 Part 1: Thoth initial-thorium priors and sample-specific Bayesian U–Th age corrections." />
-  <link rel="stylesheet" href="./style.css" />
-  <script defer src="./script.js?v=0.3.2-grid3"></script>
-</head>
-<body>
+  <link rel="stylesheet" href="./style.css?v=20261102-ASCII-CSV-v2" />
+
+  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+  <script defer src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <script defer src="./script.js?v=20261102-ASCII-CSV-v2"></script>
+  </head>
+ <body>
   <div class="topbar"><div class="topbar-inner"><a class="brand" href="#top"><span class="brand-mark">I</span> IBIS<span class="brand-light"> / research tools</span></a><span class="version">MODEL v0.3.2 <span class="dot"></span> PART 1</span></div></div>
   <main id="top" class="container">
     <header class="hero">
@@ -19,7 +22,7 @@
       <div class="hero-chips"><span>Thoth initial-Th prior</span><span>IBIS posterior ages</span><span>Bulk-Earth comparison</span></div>
     </header>
 
-    <div class="steps"><a href="#data" class="step active"><b>01</b><span>Measurements</span></a><a href="#settings" class="step"><b>02</b><span>Model settings</span></a><a href="#outputs" class="step"><b>03</b><span>Results</span></a></div>
+
 
     <section id="data" class="panel">
       <div class="panel-heading"><div><span class="section-label">01 / INPUTS</span><h2>U–Th measurements</h2><p>Paste a rectangular range from Excel, upload an Excel or CSV file, or enter values directly. Activity ratios and uncertainties are absolute 1σ.</p></div><div class="count-pill"><span id="dataCount">0</span> analyses</div></div>
@@ -27,22 +30,188 @@
       <div class="table-scroll"><table id="inputTable"><thead><tr><th class="index">#</th><th>Depth</th><th>(²³⁴U/²³⁸U)<sub>A</sub></th><th>±1σ</th><th>(²³⁰Th/²³⁸U)<sub>A</sub></th><th>±1σ</th><th>(²³²Th/²³⁸U)<sub>A</sub></th><th>±1σ</th><th>Depth ±1σ <span class="optional">optional</span></th></tr></thead><tbody></tbody></table></div>
       <div class="below-table"><span>Tip: click a Depth data cell and press ⌘V (Mac) or Ctrl+V (Windows) to paste a range from Excel or Google Sheets. Extra rows are added automatically. Depth uncertainty is optional.</span><span id="dataStatus" role="status">Ready for measurements</span></div>
     </section>
+    
+	<section id="data_explore" class="panel">
+
+ 	   <div class="panel-heading">
+    	    <div>
+         	   <span class="section-label">
+         	       02 / DATA EXPLORATION
+         	   </span>
+
+         	   <h2>Explore your U–Th measurements</h2>
+
+          	  <p>
+          	      Visualize activity ratios and analytical
+          	      uncertainties before running the Bayesian model.
+          	  </p>
+       	 </div>
+    	</div>
+
+   	 <div class="exploration-grid">
+
+	<div class="plot-card">
+    <h3>Standardized activity ratios vs. depth</h3>
+
+    <p class="help">
+        Each activity ratio is independently standardized using:
+    </p>
+
+    <p class="math-formula">
+        \[
+            Z_i = \frac{R_i - \overline{R}}{s_R}
+        \]
+    </p>
+
+    <p class="help">
+        Where \(R_i\) is the measured activity ratio,
+        \(\overline{R}\) is the mean activity ratio,
+        and \(s_R\) is its sample standard deviation.
+    </p>
+     <p class="help">
+        We standardize to put all the activity ratios on a common scale. This helps to highlight potential trends, covariance, and anomalous measurements rather than looking at absolute values.
+    </p>
+	    <div id="plotStandardized"></div>
+	</div>
+        
+        <div class="plot-card">
+            <h3>Uncorrected and bulk Earth correction depth vs. ages</h3>
+            <div id="plotAgeComparison"></div>
+        </div>
+
+   	 </div>
+
+	</section>
 
     <section id="settings" class="panel">
-      <div class="panel-heading"><div><span class="section-label">02 / CONFIGURATION</span><h2>Thoth model settings</h2><p>Adjust how the initial-thorium prior is generated from the U–Th measurements and their stratigraphic ordering.</p></div></div>
+      <div class="panel-heading"><div><span class="section-label">03 / CONFIGURATION</span><h2>Thoth model settings</h2><p>Adjust how the initial-thorium prior is generated from the U–Th measurements and their stratigraphic ordering.</p></div></div>
       <div class="settings-grid">
         <div class="setting-box"><div class="field-head"><label for="fractionDet">Flexible / detrital proposal fraction</label><output id="fractionDetValue">50%</output></div><input id="fractionDet" type="range" min="0" max="1" step="0.05" value="0.5" /><div class="range-ends"><span>Bulk-Earth-like</span><span>Flexible / broad</span></div><p class="help">Fraction of proposed initial-Th values drawn from the broad flexible component. The remainder uses the Bulk-Earth-like component.</p></div>
         <div class="setting-box"><div class="field-head"><label for="globalMass">Global Thoth prior weight</label><output id="globalMassValue">80%</output></div><input id="globalMass" type="range" min="0" max="1" step="0.05" value="0.8" /><div class="range-ends"><span>Local stratigraphy</span><span>Global stratigraphy</span></div><p class="help">Blend the whole-record Thoth prior with priors estimated from neighboring depth windows.</p></div>
         <div class="setting-box full"><label class="toggle-row" for="useR02Sigma"><span><strong>Include proposed initial-Th uncertainty in Thoth age σ</strong><small>Propagates initial-Th proposal uncertainty when evaluating stratigraphic ages. Measured analytical age uncertainty is always included.</small></span><span class="switch"><input id="useR02Sigma" type="checkbox" /><span class="track"></span></span></label></div>
       </div>
-      <details class="advanced"><summary>Advanced sampling controls <span>Optional</span></summary><div class="advanced-grid"><label>Global proposals target<input id="nGlobal" type="number" min="100" max="20000" value="500" /></label><label>Local window target<input id="nLayer" type="number" min="50" max="20000" value="150" /></label><label>Neighboring layers<input id="neighbors" type="number" min="0" max="5" value="1" /></label><label>MCMC chains<input id="chains" type="number" min="2" max="6" value="3" /></label><label>Sampling iterations / chain<input id="iterations" type="number" min="100" max="2000000" value="4000" /></label><label>Burn-in iterations / chain<input id="burnIn" type="number" min="0" max="2000000" value="2000" /></label></div><p class="help">These initial values are for exploratory runs. Increase Thoth samples and MCMC iterations for research-grade results, and check chain convergence before interpreting intervals.</p></details>
+      <details class="advanced"><summary>Advanced Thoth controls <span>Optional</span></summary><div class="advanced-grid"><label>Global proposals target<input id="nGlobal" type="number" min="100" max="20000" value="500" /></label><label>Local window target<input id="nLayer" type="number" min="50" max="20000" value="150" /></label><label>Neighboring layers<input id="neighbors" type="number" min="0" max="5" value="1" /></label></div><p class="help">These initial values are for exploratory runs. Increase the Thoth proposal targets for more thorough prior estimation.</p></details>
     </section>
 
-    <section id="outputs" class="panel action-panel"><div class="panel-heading"><div><span class="section-label">03 / ANALYSIS</span><h2>Run IBIS Part 1</h2><p>First build the Thoth prior, then sample the IBIS posterior. No age–depth model is run.</p></div></div><div class="action-grid"><div class="action-stage"><div class="stage-number">A</div><div><h3>Generate Thoth prior</h3><p>Inspect the initial ²³⁰Th/²³²Th probability distribution.</p></div><button id="priorButton" type="button" class="button primary">Generate prior <span aria-hidden="true">↗</span></button></div><div class="action-stage"><div class="stage-number">B</div><div><h3>Estimate IBIS ages</h3><p>Run Bayesian Part 1, with bulk-Earth and uncorrected comparisons.</p></div><button id="runButton" type="button" class="button primary" disabled>Run IBIS Part 1 <span aria-hidden="true">↗</span></button></div></div><div id="jobStatus" class="job-status" role="status" aria-live="polite"><span class="status-dot"></span><span id="jobText">Load or paste measurements to begin.</span><span id="spinner" class="spinner hidden" aria-hidden="true"></span></div></section>
+    <section id="outputs" class="panel action-panel">
+      <div class="panel-heading"><div><span class="section-label">04 / THOTH</span>
+        <h2>Build or upload your Thoth prior</h2>
+        <p>These settings apply only to the stratigraphy-informed initial-thorium prior.</p>
+      </div></div>
+      <div class="toolbar">
+        <button id="priorButton" type="button" class="button primary">Generate Thoth prior</button>
+        <label for="uploadPriorFile" class="button secondary file-button">↑ Upload saved prior .pkl</label>
+        <input id="uploadPriorFile" type="file" accept=".pkl,application/octet-stream" hidden />
+      </div>
+      <div id="jobStatus" class="job-status" role="status" aria-live="polite"><span class="status-dot"></span><span id="jobText">Load or paste measurements to begin.</span><span id="spinner" class="spinner hidden" aria-hidden="true"></span></div>
+    </section>
 
-    <section id="priorResult" class="results hidden"><div class="results-head"><div><span class="section-label">RESULT A / THOTH</span><h2>Initial thorium prior</h2><p>Stratigraphy-informed initial-Th composition distribution.</p></div><div class="result-tag">Prior computed</div></div><div class="stats"><div class="stat"><small>Median initial Th</small><strong id="priorMedian">—</strong></div><div class="stat"><small>95% interval · lower</small><strong id="priorLo">—</strong></div><div class="stat"><small>95% interval · upper</small><strong id="priorHi">—</strong></div></div><div class="plot-card"><img id="priorPlot" alt="Thoth initial thorium prior density chart" /></div></section>
+    <section id="priorResult" class="results hidden">
+    <div class="results-head"><div>
+    <span class="section-label">RESULT A / THOTH</span><h2>Initial thorium prior</h2><p>Stratigraphy-informed initial-Th composition distribution.</p></div>
+    <div class="result-tag">Prior computed</div></div><div 
+    class="stats"><div 
+    class="stat"><small>Median initial Th</small><strong 
+    id="priorMedian">—</strong></div><div class="stat"><small>95% interval · lower</small><strong id="priorLo">—</strong></div><div class="stat"><small>95% interval · upper</small><strong id="priorHi">—</strong></div></div><div class="plot-card"><img id="priorPlot" alt="Thoth initial thorium prior density chart" /></div><div class="prior-download"><button id="downloadPriorButton" class="button secondary" type="button" disabled>↓ Download Thoth prior .pkl</button><p class="help">Saved prior includes the original measurements and model workspace. Only upload files you created and trust.</p></div></section>
 
-    <section id="ibisResult" class="results hidden"><div class="results-head"><div><span class="section-label">RESULT B / IBIS PART 1</span><h2>Sample-specific U–Th ages</h2><p>IBIS posterior medians and symmetric 1σ-equivalent uncertainties, alongside conventional age estimates.</p></div><button id="downloadButton" type="button" class="button secondary">↓ Download CSV</button></div><div class="stat-note">The comparison plot shows actual IBIS 95% credible intervals and ±2σ for conventional ages. The table reports 1σ values, with IBIS equal-tailed 68% and 95% intervals included in the CSV.</div><div class="plot-card"><img id="agePlot" alt="Comparison of uncorrected, bulk Earth and IBIS ages by sampling depth" /></div><div class="plot-card"><img id="thoriumPlot" alt="IBIS initial thorium posterior for each depth, with 95 percent intervals" /></div><div id="farajiResult" class="faraji-card hidden"><div class="faraji-heading"><span class="section-label">VALIDATION / FARAJI ET AL. (2021)</span><h3>IBIS vs. back-calculated initial thorium</h3><p>Ten published laminae-constrained initial-thorium values compared with the IBIS posterior. Horizontal errors are published ±2σ; vertical errors are IBIS 95% credible errors. The diagonal is the 1:1 line.</p></div><div class="plot-card"><img id="farajiPlot" alt="One-to-one plot of IBIS-estimated and Faraji et al. 2021 back-calculated initial thorium ratios with horizontal and vertical uncertainty bars" /></div><p id="farajiSummary" class="faraji-summary"></p><p class="citation">Faraji, M. et al. (2021). Accurate dating of stalagmites from low seasonal contrast tropical Pacific climate using Sr 2D maps, fabrics and annual hydrological cycles. <em>Scientific Reports</em> 11, 2178. <a href="https://doi.org/10.1038/s41598-021-81941-x" target="_blank" rel="noopener noreferrer">Read paper ↗</a></p></div><div class="result-table-scroll"><table id="resultTable"><thead><tr><th>Depth</th><th>Uncorrected age ±1σ (yr)</th><th>Bulk Earth age ±1σ (yr)</th><th>IBIS age ±1σ (yr)</th><th>IBIS 95% interval (yr)</th><th>Initial Th ±1σ</th></tr></thead><tbody></tbody></table></div></section>
+    <section id="mcmcStage" class="panel action-panel">
+      <div class="panel-heading"><div><span class="section-label">05 / POSTERIOR SAMPLING</span>
+        <h2>IBIS Part 1 MCMC</h2><p>Choose chain count, sampling iterations and burn-in independently. Changing these values does not regenerate the Thoth prior.</p>
+      </div></div>
+      <div class="advanced-grid mcmc-controls">
+        <label>MCMC chains<input id="chains" type="number" min="2" max="6" value="3" /></label>
+        <label>Sampling iterations / chain<input id="iterations" type="number" min="100" max="2000000" value="4000" /></label>
+        <label>Burn-in iterations / chain<input id="burnIn" type="number" min="0" max="2000000" value="2000" /></label>
+      </div>
+      <p class="help">The displayed values are submitted directly to the Part 1 backend when you click Run. The prior above stays available.</p>
+      <button id="runButton" type="button" class="button primary" disabled>Run IBIS Part 1</button>
+    </section>
+
+    <section id="ibisResult" class="results hidden">
+      <div class="results-head"><div>
+        <span class="section-label">RESULT B / IBIS PART 1</span>
+        <h2>Sample-specific U–Th ages</h2>
+        <p>Interactive posterior plots, conventional comparisons and downloadable figures.</p>
+      </div></div>
+      <div id="mcmcSettingsUsed" class="stat-note"></div>
+      <details id="mcmcDiagnostics" class="plot-card result-figure diagnostics-details">
+        <summary class="diagnostics-heading">
+          <span class="diagnostics-heading-text"><strong>MCMC diagnostics</strong><small>Click to show or hide chain traces, Rhat and effective sample sizes</small></span>
+          <span class="diagnostics-chevron" aria-hidden="true"></span>
+        </summary>
+        <div class="diagnostics-content">
+          <p id="diagnosticStatus" class="help">Chain-wise sampler diagnostics will appear here after running IBIS.</p>
+          <div class="diagnostic-controls">
+            <label>Parameter<select id="traceParameter"><option>Log posterior</option><option>Age</option><option>Initial Th</option><option>234U/238U</option><option>232Th/238U</option><option>230Th/238U</option><option>Initial 234U/238U</option></select></label>
+            <label>Horizon / depth<select id="traceDepth"></select></label>
+          </div>
+          <div id="diagnosticSummary" class="stats"></div>
+          <div id="logPosteriorPlot" class="ibis-plot"></div>
+          <h4>Rank-normalized Rhat and effective sample sizes</h4>
+          <p class="help">Each row is one sampled quantity at one depth. Select a parameter and depth to inspect the chains.</p>
+          <div class="result-table-scroll"><table id="rhatDiagnostics"><thead><tr><th>Depth</th><th>Parameter</th><th>Rhat</th><th>Approximate ESS</th></tr></thead><tbody></tbody></table></div>
+        </div>
+      </details>
+      <div class="stat-note">IBIS error bars show asymmetric 95% credible intervals; conventional age errors show ±2σ. Click legend entries to toggle series; use the figure toolbar to save SVG or PNG.</div>
+      <div class="plot-card result-figure"><h3>U–Th age comparison</h3><div id="agePlot" class="ibis-plot"></div></div>
+      <div class="plot-card result-figure"><h3>Initial thorium vs depth</h3><div id="thoriumPlot" class="ibis-plot"></div></div>
+      <div class="plot-card result-figure"><h3>Standardized activity ratios and inferred initial thorium</h3><p class="help">Each series is independently standardized using the across-depth sample mean and standard deviation. Measured activity ratios show ±1σ; initial thorium shows its asymmetric 95% credible interval.</p><div id="posteriorStandardizedPlot" class="ibis-plot"></div></div>
+      <div id="farajiResult" class="faraji-card hidden"><div class="faraji-heading"><span class="section-label">VALIDATION / FARAJI ET AL. (2021)</span><h3>IBIS vs. back-calculated initial thorium</h3><p>Ten published laminae-constrained initial-thorium values compared with the IBIS posterior. Horizontal errors are published ±1σ; vertical errors are IBIS 68% credible errors. The diagonal is the 1:1 line.</p></div><div class="plot-card"><img id="farajiPlot" alt="One-to-one plot of IBIS-estimated and Faraji et al. 2021 back-calculated initial thorium ratios with horizontal and vertical uncertainty bars" /></div><p id="farajiSummary" class="faraji-summary"></p><p class="citation">Faraji, M. et al. (2021). Accurate dating of stalagmites from low seasonal contrast tropical Pacific climate using Sr 2D maps, fabrics and annual hydrological cycles. <em>Scientific Reports</em> 11, 2178. <a href="https://doi.org/10.1038/s41598-021-81941-x" target="_blank" rel="noopener noreferrer">Read paper ↗</a></p></div>
+    
+
+    <!-- Complete output table; all headings use plain ASCII text -->
+    <div class="result-table-scroll">
+      <table id="resultTable" class="full-results-table">
+        <caption>Complete IBIS results. All ages and age errors are in years. "1sigma" means one standard deviation; 68% and 95% columns are interval boundaries.</caption>
+        <thead>
+          <tr class="group-row">
+            <th colspan="2" scope="colgroup">Stratigraphy</th>
+            <th colspan="6" scope="colgroup">Measured activity ratios</th>
+            <th colspan="4" scope="colgroup">Conventional U-Th ages</th>
+            <th colspan="8" scope="colgroup">IBIS posterior ages</th>
+            <th colspan="2" scope="colgroup">Initial thorium</th>
+          </tr>
+          <tr class="column-row">
+            <th scope="col">Depth</th>
+            <th scope="col">Depth 1sigma</th>
+            <th scope="col">U234/U238 ratio</th>
+            <th scope="col">U234/U238 1sigma</th>
+            <th scope="col">Th230/U238 ratio</th>
+            <th scope="col">Th230/U238 1sigma</th>
+            <th scope="col">Th232/U238 ratio</th>
+            <th scope="col">Th232/U238 1sigma</th>
+            <th scope="col">Uncorrected age (yr)</th>
+            <th scope="col">Uncorrected age 1sigma (yr)</th>
+            <th scope="col">Bulk Earth age (yr)</th>
+            <th scope="col">Bulk Earth age 1sigma (yr)</th>
+            <th scope="col">IBIS age median (yr)</th>
+            <th scope="col">IBIS age symmetric 1sigma (yr)</th>
+            <th scope="col">IBIS 68% lower age (yr)</th>
+            <th scope="col">IBIS 68% upper age (yr)</th>
+            <th scope="col">IBIS 95% lower age (yr)</th>
+            <th scope="col">IBIS 95% upper age (yr)</th>
+            <th scope="col">IBIS 95% minus error (yr)</th>
+            <th scope="col">IBIS 95% plus error (yr)</th>
+            <th scope="col">Initial Th</th>
+            <th scope="col">Initial Th 1sigma</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="download-results">
+  <div><h3>Download complete IBIS results</h3>
+  <p>Download an Excel-friendly CSV with readable ASCII column names (for example, ibis_age_symmetric_1sigma_yr), plus all posterior and measurement values.</p></div>
+  <div>
+    <button id="downloadButton" type="button" class="button primary">Download results CSV (ASCII v2)</button>
+    <p id="csvExporterStatus" class="help" style="margin:8px 0 0; font-size:11px;">CSV exporter not loaded. Refresh the browser.</p>
+  </div>
+</div>
+
+    
+    
+    </section>
     <footer><div><strong>IBIS</strong> <span>Integrated Bayesian Initial-thorium correction</span><p class="bird-note"><sup>*</sup> An ibis is a medium-to-large, long-legged wading bird of the family Threskiornithidae, known for its slender, downward-curving bill.</p></div><p>Part 1 only · 0.3.2 · Ages in years · Research tool</p></footer>
   </main>
 </body>
