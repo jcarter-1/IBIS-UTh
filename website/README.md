@@ -1,19 +1,14 @@
 # IBIS Part 1 · Web interface
 
-A local FastAPI website for **IBIS U–Th 0.3.2**. It implements only the first stage: an empirical Thoth initial-thorium prior and sample-specific Bayesian corrected ages. It **does not** run `Run_MCMC_Strat()` and **does not** produce an age–depth fit.
+A local FastAPI website for **IBIS U–Th 0.3.2**. It implements only the first stage: an empirical Thoth initial-thorium prior and sample-specific Bayesian corrected ages. **Does not** run `Run_MCMC_Strat()` part of the code for the time being but is a tool for visualizing the the effect of initial thorium correction choices and applying IBIS. 
 
 ## Run it on your Mac
 
-Install Python 3.12, 3.13, or 3.14 (the supported versions for `ibis-uth` 0.3.2). From this folder:
+Install Python 3.12, 3.13, or 3.14 (the supported versions for `ibis-uth` 0.3.2). 
+Use the .sh start up code. 
+From the folder directory run $bash start_ibis.sh
 
-```bash
-python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-python -m uvicorn app:app --reload
-```
-
-Open **http://127.0.0.1:8000** in your browser. If you use Python 3.14, substitute `python3.14` in the first line.
+The first run will install all IBIS dependencies then send you to the locally hosted website. Running the second time will just send you to the website page. 
 
 ## Workflow
 
@@ -26,7 +21,7 @@ Open **http://127.0.0.1:8000** in your browser. If you use Python 3.14, substitu
 
 Click **Faraji et al. (2021) test case** to populate ten analyses from the supplied `Faraji_2021_data.xlsx` and enable the published initial-thorium reference comparison. The test case is shipped as `static/examples/faraji_2021.csv` so it works immediately after installing the website; you can also import the original `.xlsx` yourself as an ordinary dataset.
 
-Run **Generate prior**, then **Run IBIS Part 1**. For the Faraji preset, results include an additional **1:1 diagram** of posterior IBIS initial `(²³⁰Th/²³²Th)ₐ₀` against the ten back-calculated values from laminae ages: `[8.05, 6.00, 5.98, 6.63, 7.74, 6.55, 6.01, 6.21, 6.87, 4.88]`, with published absolute 1σ uncertainties `[0.24, 0.25, 0.27, 0.25, 0.18, 0.21, 0.50, 0.46, 0.27, 0.97]`. Horizontal bars are Faraji uncertainties and vertical bars are IBIS 1σ-equivalent uncertainties; the dashed diagonal represents perfect agreement. Matchups use **depth** rather than lexically sorting sample labels (`PU17-10` precedes `Pu17-7` by depth). CSV downloads include the matched sample name, Faraji estimate, uncertainty and IBIS-minus-Faraji difference. Adjusting Thoth settings preserves the reference comparison, but manually editing the measurements clears it to avoid incorrect matchups.
+Run **Generate prior**, then **Run IBIS Part 1**. For the Faraji preset, results include an additional **1:1 diagram** of posterior IBIS initial `(²³⁰Th/²³²Th)ₐ₀` against the ten back-calculated values from laminae ages: `[8.05, 6.00, 5.98, 6.63, 7.74, 6.55, 6.01, 6.21, 6.87, 4.88]`, with published absolute 1σ uncertainties `[0.24, 0.25, 0.27, 0.25, 0.18, 0.21, 0.50, 0.46, 0.27, 0.97]`. Horizontal bars are Faraji uncertainties and vertical bars are IBIS 1σ-equivalent uncertainties; the dashed diagonal represents perfect agreement. Matchups use **depth**. CSV downloads include the matched sample name, Faraji estimate, uncertainty and IBIS-minus-Faraji difference. 
 
 *Citation:* Faraji, M., Borsato, A., Frisia, S., Hellstrom, J. C., Lorrey, A., Hartland, A., Greig, A. & Mattey, D. P. (2021). Accurate dating of stalagmites from low seasonal contrast tropical Pacific climate using Sr 2D maps, fabrics and annual hydrological cycles. *Scientific Reports* **11**, 2178.
 
