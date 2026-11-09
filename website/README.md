@@ -18,7 +18,7 @@ A FastAPI website for **IBIS U–Th 0.3.2**, designed to live inside the existin
 
 Click **Faraji et al. (2021) test case** to populate ten analyses and enable the published initial-thorium reference comparison. The test case is embedded directly in `static/script.js`, so no separate CSV file is required; you can also import the original `.xlsx` yourself as an ordinary dataset.
 
-Run **Generate prior**, then **Run IBIS Part 1**. For the Faraji preset, results include an additional **1:1 diagram** of posterior IBIS initial `(²³⁰Th/²³²Th)ₐ₀` against the ten back-calculated values from laminae ages: `[8.05, 6.00, 5.98, 6.63, 7.74, 6.55, 6.01, 6.21, 6.87, 4.88]`, with published absolute 1σ uncertainties `[0.24, 0.25, 0.27, 0.25, 0.18, 0.21, 0.50, 0.46, 0.27, 0.97]`. Horizontal bars show Faraji ±1σ and vertical bars show IBIS 68% credible intervals; the dashed diagonal represents perfect agreement. Matchups use **depth** rather than lexically sorting sample labels (`PU17-10` precedes `Pu17-7` by depth). CSV downloads include the matched sample name, Faraji estimate, uncertainty and IBIS-minus-Faraji difference. Adjusting Thoth settings preserves the reference comparison, but manually editing the measurements clears it to avoid incorrect matchups.
+Run **Generate prior**, then **Run IBIS Part 1**. For the Faraji preset, results include an additional **1:1 diagram** of posterior IBIS initial `(²³⁰Th/²³²Th)ₐ₀` against the ten back-calculated values from laminae ages: `[8.05, 6.00, 5.98, 6.63, 7.74, 6.55, 6.01, 6.21, 6.87, 4.88]`, with published absolute 1σ uncertainties `[0.24, 0.25, 0.27, 0.25, 0.18, 0.21, 0.50, 0.46, 0.27, 0.97]`. Horizontal bars show Faraji ±1σ and vertical bars show IBIS 68% credible intervals; the dashed diagonal represents perfect agreement. Matchups use **depth**. CSV downloads include the matched sample name, Faraji estimate, uncertainty and IBIS-minus-Faraji difference. 
 
 *Citation:* Faraji, M., Borsato, A., Frisia, S., Hellstrom, J. C., Lorrey, A., Hartland, A., Greig, A. & Mattey, D. P. (2021). Accurate dating of stalagmites from low seasonal contrast tropical Pacific climate using Sr 2D maps, fabrics and annual hydrological cycles. *Scientific Reports* **11**, 2178.
 
@@ -26,10 +26,14 @@ Run **Generate prior**, then **Run IBIS Part 1**. For the Faraji preset, results
 
 | User control | IBIS 0.3.2 parameter | Meaning |
 |---|---|---|
-| Flexible/detrital proposal fraction | `fraction_bulk = 1 - fraction_det` | Fraction of proposals drawn from a *broad, flexible* initial-Th distribution vs. a Bulk-Earth-like proposal; not a measured detrital mass fraction. `fraction_det` exists in 0.3.2 but its sampler does **not** currently read it, so this mapping is required. |
+| Flexible/detrital proposal fraction | `fraction_bulk = 1 - fraction_det` | Fraction of proposals drawn from a *broad, flexible* initial-Th distribution vs. a Bulk-Earth-like proposal; not a measured detrital mass fraction.
+
 | Global prior weight | `global_mass` | Mixture weight of the full-record Thoth KDE vs. neighboring-window KDEs. |
+
 | Include proposed Th uncertainty in age σ | `use_r02_in_sigma` | Includes the uncertainty of each proposed initial-Th correction when evaluating the age uncertainties for Thoth stratigraphy. The age-uncertainty terms from U–Th analyses remain included when unchecked. |
+
 | Global / local proposal targets | `n_samples_global`, `n_samples_layer` | Requested valid samples for global/local Thoth prior construction. The website also sets `candidate_factor=3`, `batch_size=300`, and `cv=3` for practical runtime. |
+
 | Chains / iterations / burn-in | `n_chains`, `MCMC_samples`, `MCMC_burn_in` | IBIS Part 1 posterior MCMC. |
 
 The supplied default sampling settings are **exploratory**, not a claim of converged posterior estimates. Increase counts and iterations and examine MCMC convergence before using results for publication.
